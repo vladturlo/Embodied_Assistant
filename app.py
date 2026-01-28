@@ -1,0 +1,271 @@
+"""Multimodal AutoGen-Chainlit Agent.
+
+This is the main application that integrates AutoGen with Chainlit
+to provide a multimodal AI agent with webcam capabilities.
+
+Usage:
+    chainlit run app.py
+"""
+
+from pathlib import Path
+from typing import List, cast
+
+import chainlit as cl
+import yaml
+from autogen_agentchat.agents import AssistantAgent
+from autogen_agentchat.base import Response
+from autogen_agentchat.messages import (
+    MultiModalMessage,
+    TextMessage,
+    ModelClientStreamingChunkEvent,
+    ToolCallRequestEvent,
+    ToolCallExecutionEvent,
+)
+from autogen_core import CancellationToken, Image as AGImage
+from autogen_core.models import ModelInfo
+from autogen_ext.models.ollama import OllamaChatCompletionClient
+
+from tools.webcam import capture_webcam, extract_video_frames
+
+# Configuration
+OLLAMA_HOST = "http://localhost:11435"
+MODEL_NAME = "qwen3-vl:238b"
+CONTEXT_SIZE = 262144  # 256K context
+
+
+def load_model_config() -> dict:
+    """Load model configuration from YAML file.
+
+    Returns:
+        Configuration dictionary.
+    """
+    config_path = Path(__file__).parent / "model_config.yaml"
+    if config_path.exists():
+        with open(config_path, "r") as f:
+            return yaml.safe_load(f)
+    return {}
+
+
+def create_model_client() -> OllamaChatCompletionClient:
+    """Create and configure the Ollama model client.
+
+    Returns:
+        Configured OllamaChatCompletionClient.
+    """
+    config = load_model_config()
+
+    return OllamaChatCompletionClient(
+        model=config.get("model", MODEL_NAME),
+        host=config.get("host", OLLAMA_HOST),
+        model_info=ModelInfo(
+            vision=True,
+            function_calling=True,
+            json_output=False,
+            family="unknown",
+            structured_output=False
+        ),
+        options={
+            "temperature": config.get("options", {}).get("temperature", 0.7),
+            "num_ctx": config.get("options", {}).get("num_ctx", CONTEXT_SIZE),
+        }
+    )
+
+
+# Wrapper function for the webcam tool that shows in Chainlit
+@cl.step(type="tool")
+async def webcam_capture_tool(mode: str = "image", duration: float = 3.0) -> str:
+    """Capture image or video from webcam.
+
+    This tool captures media from the webcam and displays it in the chat.
+    The captured file path is returned for the vision model to analyze.
+
+    Args:
+        mode: Either "image" for single frame or "video" for short clip.
+        duration: Duration in seconds for video capture (1-10).
+
+    Returns:
+        Path to the captured file or error message.
+    """
+    result = await capture_webcam(mode=mode, duration=duration)
+    return result
+
+
+@cl.set_starters
+async def set_starters() -> List[cl.Starter]:
+    """Set starter prompts for the chat interface.
+
+    Returns:
+        List of starter prompts.
+    """
+    return [
+        cl.Starter(
+            label="Webcam Capture",
+            message="Take a picture with the webcam and tell me what you see.",
+        ),
+        cl.Starter(
+            label="Image Analysis",
+            message="I'll upload an image for you to analyze.",
+        ),
+        cl.Starter(
+            label="Video Capture",
+            message="Record a short video from the webcam and describe what happens.",
+        ),
+        cl.Starter(
+            label="General Chat",
+            message="Hello! What can you help me with today?",
+        ),
+    ]
+
+
+@cl.on_chat_start
+async def start_chat() -> None:
+    """Initialize the chat session with the multimodal agent."""
+    # Create model client
+    model_client = create_model_client()
+
+    # Create the assistant agent with webcam tool
+    assistant = AssistantAgent(
+        name="multimodal_assistant",
+        model_client=model_client,
+        tools=[webcam_capture_tool],
+        system_message="""You are a helpful multimodal AI assistant with vision capabilities.
+
+You can:
+1. Analyze images that users upload
+2. Capture images or short videos from the webcam using the webcam_capture_tool
+3. Describe what you see in images and videos
+4. Answer questions about visual content
+
+When users ask you to "look", "see", "capture", or use the webcam, use the webcam_capture_tool.
+After capturing, analyze the image and describe what you see.
+
+Be helpful, accurate, and descriptive in your visual analysis.""",
+        model_client_stream=True,
+        reflect_on_tool_use=True,
+    )
+
+    # Store agent in session
+    cl.user_session.set("agent", assistant)
+
+    # Send welcome message
+    await cl.Message(
+        content="Hello! I'm a multimodal AI assistant. I can:\n"
+                "- Analyze images you upload\n"
+                "- Capture images/videos from your webcam\n"
+                "- Answer questions about visual content\n\n"
+                "Try uploading an image or ask me to use the webcam!"
+    ).send()
+
+
+@cl.on_message
+async def on_message(message: cl.Message) -> None:
+    """Handle incoming messages from the user.
+
+    Args:
+        message: The incoming Chainlit message.
+    """
+    agent = cast(AssistantAgent, cl.user_session.get("agent"))
+
+    if agent is None:
+        await cl.Message(content="Error: Agent not initialized. Please refresh.").send()
+        return
+
+    # Check for image attachments
+    images = [el for el in message.elements if el.mime and "image" in el.mime]
+    videos = [el for el in message.elements if el.mime and "video" in el.mime]
+
+    # Build the message for the agent
+    if images or videos:
+        content = []
+
+        # Add text content if present
+        if message.content:
+            content.append(message.content)
+
+        # Add images
+        for img in images:
+            try:
+                ag_image = AGImage.from_file(Path(img.path))
+                content.append(ag_image)
+            except Exception as e:
+                await cl.Message(content=f"Error loading image {img.name}: {e}").send()
+
+        # Handle videos - extract frames for analysis
+        for vid in videos:
+            try:
+                frames = extract_video_frames(vid.path, num_frames=5)
+                if frames:
+                    content.append(f"[Video: {vid.name} - {len(frames)} frames extracted]")
+                    for i, frame in enumerate(frames):
+                        content.append(AGImage(frame))
+                else:
+                    content.append(f"[Video: {vid.name} - could not extract frames]")
+            except Exception as e:
+                await cl.Message(content=f"Error processing video {vid.name}: {e}").send()
+
+        # Create multimodal message
+        if len(content) > 0:
+            agent_message = MultiModalMessage(content=content, source="user")
+        else:
+            agent_message = TextMessage(content=message.content or "Analyze this", source="user")
+    else:
+        # Text-only message
+        agent_message = TextMessage(content=message.content, source="user")
+
+    # Create response message for streaming
+    response_msg = cl.Message(content="")
+
+    try:
+        # Stream the response
+        async for event in agent.on_messages_stream(
+            messages=[agent_message],
+            cancellation_token=CancellationToken(),
+        ):
+            if isinstance(event, ModelClientStreamingChunkEvent):
+                # Stream text chunks
+                if event.content:
+                    await response_msg.stream_token(event.content)
+
+            elif isinstance(event, ToolCallRequestEvent):
+                # Tool is being called
+                for call in event.content:
+                    await cl.Message(
+                        content=f"Using tool: **{call.name}**"
+                    ).send()
+
+            elif isinstance(event, ToolCallExecutionEvent):
+                # Tool execution completed
+                for result in event.content:
+                    if result.is_error:
+                        await cl.Message(
+                            content=f"Tool error: {result.content}"
+                        ).send()
+
+            elif isinstance(event, Response):
+                # Final response
+                if response_msg.content:
+                    await response_msg.send()
+                else:
+                    # If no streaming content, send the final response
+                    final_content = event.chat_message.content
+                    if final_content:
+                        await cl.Message(content=final_content).send()
+
+    except Exception as e:
+        await cl.Message(content=f"Error: {e}").send()
+        import traceback
+        traceback.print_exc()
+
+
+@cl.on_stop
+async def on_stop():
+    """Handle chat stop/interrupt."""
+    await cl.Message(content="Chat stopped.").send()
+
+
+# For running directly (debugging)
+if __name__ == "__main__":
+    print("This is a Chainlit app. Run with:")
+    print("  chainlit run app.py")
+    print("\nOr for development with auto-reload:")
+    print("  chainlit run app.py -w")

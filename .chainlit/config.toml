@@ -1,0 +1,42 @@
+[project]
+# Enable telemetry (optional)
+enable_telemetry = false
+
+# Show readme on start
+show_readme_as_default = false
+
+[features]
+# Enable spontaneous file upload
+[features.spontaneous_file_upload]
+enabled = true
+# Accept image files
+accept = ["image/jpeg", "image/png", "image/gif", "image/webp", "video/mp4", "video/webm"]
+max_files = 10
+max_size_mb = 100
+
+# Enable audio
+[features.audio]
+enabled = false
+
+# Enable LaTeX rendering
+[features.latex]
+enabled = true
+
+[UI]
+# Name of the app
+name = "Multimodal Agent"
+
+# Description for the app
+description = "AI agent with webcam and image analysis capabilities"
+
+# Default expand messages
+default_expand_messages = true
+
+# Hide cot (chain of thought)
+hide_cot = false
+
+# Enable dark mode
+# theme = "dark"
+
+[meta]
+generated_by = "claude-code"

@@ -1,0 +1,30 @@
+[project]
+name = "multimodal-agent"
+version = "0.1.0"
+description = "Multimodal AI agent with webcam interaction using AutoGen and Chainlit"
+readme = "CLAUDE.md"
+requires-python = ">=3.12"
+dependencies = [
+    "autogen-agentchat>=0.4",
+    "autogen-ext[ollama]>=0.4",
+    "chainlit>=1.0",
+    "pyyaml>=6.0",
+    "pillow>=10.0",
+    "httpx>=0.27",
+    "opencv-python>=4.9",
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
