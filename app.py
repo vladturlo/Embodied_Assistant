@@ -29,7 +29,7 @@ from tools.webcam import capture_webcam, extract_video_frames
 
 # Configuration
 OLLAMA_HOST = "http://localhost:11435"
-MODEL_NAME = "qwen3-vl:238b"
+MODEL_NAME = "qwen3-vl:235b"
 CONTEXT_SIZE = 262144  # 256K context
 
 
@@ -214,6 +214,7 @@ async def on_message(message: cl.Message) -> None:
 
     # Create response message for streaming
     response_msg = cl.Message(content="")
+    captured_images = []  # Track captured images for follow-up analysis
 
     try:
         # Stream the response
@@ -240,6 +241,22 @@ async def on_message(message: cl.Message) -> None:
                         await cl.Message(
                             content=f"Tool error: {result.content}"
                         ).send()
+                    else:
+                        # Check if result is a captured image path
+                        result_path = Path(result.content)
+                        if result_path.exists() and result_path.suffix.lower() in ['.jpg', '.jpeg', '.png']:
+                            # Display captured image in chat
+                            img_element = cl.Image(
+                                path=str(result_path),
+                                name="captured_image",
+                                display="inline"
+                            )
+                            await cl.Message(
+                                content="📷 Captured from webcam:",
+                                elements=[img_element]
+                            ).send()
+                            # Store for follow-up analysis
+                            captured_images.append(result_path)
 
             elif isinstance(event, Response):
                 # Final response
@@ -250,6 +267,32 @@ async def on_message(message: cl.Message) -> None:
                     final_content = event.chat_message.content
                     if final_content:
                         await cl.Message(content=final_content).send()
+
+        # If images were captured, send them to the model for actual analysis
+        if captured_images:
+            await cl.Message(content="Analyzing captured image...").send()
+
+            # Build multimodal message with captured images
+            analysis_content = ["Describe what you see in this image in detail:"]
+            for img_path in captured_images:
+                analysis_content.append(AGImage.from_file(img_path))
+
+            analysis_msg = MultiModalMessage(content=analysis_content, source="user")
+
+            # Get analysis from model
+            analysis_response = cl.Message(content="")
+            async for event in agent.on_messages_stream(
+                messages=[analysis_msg],
+                cancellation_token=CancellationToken(),
+            ):
+                if isinstance(event, ModelClientStreamingChunkEvent):
+                    if event.content:
+                        await analysis_response.stream_token(event.content)
+                elif isinstance(event, Response):
+                    if analysis_response.content:
+                        await analysis_response.send()
+                    elif event.chat_message.content:
+                        await cl.Message(content=event.chat_message.content).send()
 
     except Exception as e:
         await cl.Message(content=f"Error: {e}").send()
