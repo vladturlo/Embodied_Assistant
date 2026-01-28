@@ -235,14 +235,16 @@ chainlit run app.py
 ### Image Analysis Fix (2026-01-28)
 **Problem**: Model was hallucinating image descriptions instead of analyzing actual images.
 
-**Root Cause**: With `reflect_on_tool_use=True`, the webcam tool returns only a file path string. The model received this text path, not the actual image data.
+**Root Cause**: With `reflect_on_tool_use=True`, AutoGen's tool system converts all results to strings via `return_value_as_string()`. The model's reflection pass only received the file path text, not actual image data.
 
 **Fix implemented in app.py**:
-1. Track captured images during `ToolCallExecutionEvent`
-2. Display image inline with `cl.Image(display="inline")`
-3. After tool execution, send a follow-up `MultiModalMessage` with actual image data via `AGImage.from_file()`
+1. Set `reflect_on_tool_use=False` - disables automatic reflection that caused hallucination
+2. Track captured media (images AND videos) during `ToolCallExecutionEvent` as tuples (type, path)
+3. Display media inline with `cl.Image(display="inline")`
+4. After tool execution, send `MultiModalMessage` with actual image data via `AGImage.from_file()`
+5. For videos: extract frames using `extract_video_frames()` and send as multiple `AGImage` objects
 
-**Status**: Implemented, needs testing. Run the app and ask "capture webcam" to verify the model describes actual image content.
+**Status**: Fixed. The model now receives actual image data and provides accurate descriptions.
 
 ### Quick Debug Commands
 ```bash

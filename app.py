@@ -141,7 +141,7 @@ After capturing, analyze the image and describe what you see.
 
 Be helpful, accurate, and descriptive in your visual analysis.""",
         model_client_stream=True,
-        reflect_on_tool_use=True,
+        reflect_on_tool_use=False,  # Disabled: we handle image analysis explicitly after tool execution
     )
 
     # Store agent in session
@@ -242,21 +242,27 @@ async def on_message(message: cl.Message) -> None:
                             content=f"Tool error: {result.content}"
                         ).send()
                     else:
-                        # Check if result is a captured image path
+                        # Check if result is a captured media path
                         result_path = Path(result.content)
-                        if result_path.exists() and result_path.suffix.lower() in ['.jpg', '.jpeg', '.png']:
-                            # Display captured image in chat
-                            img_element = cl.Image(
-                                path=str(result_path),
-                                name="captured_image",
-                                display="inline"
-                            )
-                            await cl.Message(
-                                content="📷 Captured from webcam:",
-                                elements=[img_element]
-                            ).send()
-                            # Store for follow-up analysis
-                            captured_images.append(result_path)
+                        if result_path.exists():
+                            suffix = result_path.suffix.lower()
+                            if suffix in ['.jpg', '.jpeg', '.png']:
+                                # Display captured image in chat
+                                img_element = cl.Image(
+                                    path=str(result_path),
+                                    name="captured_image",
+                                    display="inline"
+                                )
+                                await cl.Message(
+                                    content="📷 Captured from webcam:",
+                                    elements=[img_element]
+                                ).send()
+                                # Store for follow-up analysis
+                                captured_images.append(("image", result_path))
+                            elif suffix in ['.mp4', '.avi', '.mov']:
+                                # Video is already displayed by webcam tool
+                                # Store for follow-up analysis
+                                captured_images.append(("video", result_path))
 
             elif isinstance(event, Response):
                 # Final response
@@ -268,31 +274,48 @@ async def on_message(message: cl.Message) -> None:
                     if final_content:
                         await cl.Message(content=final_content).send()
 
-        # If images were captured, send them to the model for actual analysis
+        # If media was captured, send to model for analysis
         if captured_images:
-            await cl.Message(content="Analyzing captured image...").send()
+            # Build multimodal message with captured media
+            analysis_content = []
+            has_video = False
 
-            # Build multimodal message with captured images
-            analysis_content = ["Describe what you see in this image in detail:"]
-            for img_path in captured_images:
-                analysis_content.append(AGImage.from_file(img_path))
+            for media_type, media_path in captured_images:
+                if media_type == "image":
+                    analysis_content.append(AGImage.from_file(media_path))
+                elif media_type == "video":
+                    has_video = True
+                    # Extract frames from video for vision analysis
+                    frames = extract_video_frames(str(media_path), num_frames=5)
+                    if frames:
+                        analysis_content.append(f"[Video with {len(frames)} frames]")
+                        for frame in frames:
+                            analysis_content.append(AGImage(frame))
 
-            analysis_msg = MultiModalMessage(content=analysis_content, source="user")
+            if analysis_content:
+                # Add prompt based on content type
+                if has_video:
+                    prompt = "Describe what you see happening in this video (shown as frames):"
+                else:
+                    prompt = "Describe what you see in this image in detail:"
+                analysis_content.insert(0, prompt)
 
-            # Get analysis from model
-            analysis_response = cl.Message(content="")
-            async for event in agent.on_messages_stream(
-                messages=[analysis_msg],
-                cancellation_token=CancellationToken(),
-            ):
-                if isinstance(event, ModelClientStreamingChunkEvent):
-                    if event.content:
-                        await analysis_response.stream_token(event.content)
-                elif isinstance(event, Response):
-                    if analysis_response.content:
-                        await analysis_response.send()
-                    elif event.chat_message.content:
-                        await cl.Message(content=event.chat_message.content).send()
+                analysis_msg = MultiModalMessage(content=analysis_content, source="user")
+
+                # Get analysis from model and stream response
+                analysis_response = cl.Message(content="")
+                async for event in agent.on_messages_stream(
+                    messages=[analysis_msg],
+                    cancellation_token=CancellationToken(),
+                ):
+                    if isinstance(event, ModelClientStreamingChunkEvent):
+                        if event.content:
+                            await analysis_response.stream_token(event.content)
+                    elif isinstance(event, Response):
+                        if analysis_response.content:
+                            await analysis_response.send()
+                        elif event.chat_message.content:
+                            await cl.Message(content=event.chat_message.content).send()
 
     except Exception as e:
         await cl.Message(content=f"Error: {e}").send()

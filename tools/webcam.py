@@ -10,6 +10,9 @@ Supports two modes:
 """
 
 import os
+import platform
+import shutil
+import subprocess
 import tempfile
 import time
 from pathlib import Path
@@ -25,6 +28,32 @@ try:
     CHAINLIT_AVAILABLE = True
 except ImportError:
     CHAINLIT_AVAILABLE = False
+
+def _get_ffmpeg_path() -> str:
+    """Find ffmpeg executable cross-platform.
+
+    Returns:
+        Path to ffmpeg executable.
+    """
+    # Check if ffmpeg is in PATH
+    ffmpeg_path = shutil.which('ffmpeg')
+    if ffmpeg_path:
+        return ffmpeg_path
+
+    # Windows common install locations
+    if platform.system() == "Windows":
+        common_paths = [
+            r'C:\ffmpeg\bin\ffmpeg.exe',
+            r'C:\Program Files\ffmpeg\bin\ffmpeg.exe',
+            os.path.expandvars(r'%LOCALAPPDATA%\ffmpeg\bin\ffmpeg.exe'),
+        ]
+        for path in common_paths:
+            if Path(path).exists():
+                return path
+
+    # Fallback - assume it's in PATH
+    return 'ffmpeg'
+
 
 # RTSP URL for WSL2 mode (set via environment variable)
 # Example: export WEBCAM_RTSP_URL="rtsp://172.25.192.1:8554/webcam"
@@ -138,7 +167,10 @@ async def _capture_video(cap: cv2.VideoCapture, duration: float) -> str:
     # Get video properties
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fps = 15  # Target FPS for recording
+    # Get actual FPS from capture device, fallback to 30 if not available
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    if fps <= 0 or fps > 60:
+        fps = 30  # Default for most webcams/RTSP streams
 
     # Create temp file
     temp_dir = Path(tempfile.mkdtemp())
@@ -167,6 +199,18 @@ async def _capture_video(cap: cv2.VideoCapture, duration: float) -> str:
 
     if frame_count == 0:
         return "Error: No frames captured."
+
+    # Re-encode to H.264 for browser compatibility (mp4v codec not supported by browsers)
+    h264_path = temp_dir / f"webcam_video_{int(time.time())}_h264.mp4"
+    result = subprocess.run([
+        _get_ffmpeg_path(), '-y', '-i', str(temp_path),
+        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23',
+        str(h264_path)
+    ], capture_output=True)
+
+    if result.returncode == 0 and h264_path.exists():
+        temp_path.unlink()  # Remove original non-browser-compatible file
+        temp_path = h264_path
 
     # Display in Chainlit chat if available
     if CHAINLIT_AVAILABLE:
