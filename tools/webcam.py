@@ -3,12 +3,17 @@
 This module provides functionality to capture images and short videos
 from the webcam, display them in the Chainlit chat, and return file paths
 for the vision model to analyze.
+
+Supports two modes:
+1. Direct webcam access (native Linux or Windows)
+2. RTSP streaming from Windows to WSL2 (set WEBCAM_RTSP_URL env var)
 """
 
+import os
 import tempfile
 import time
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Optional
 
 import cv2
 import numpy as np
@@ -20,6 +25,39 @@ try:
     CHAINLIT_AVAILABLE = True
 except ImportError:
     CHAINLIT_AVAILABLE = False
+
+# RTSP URL for WSL2 mode (set via environment variable)
+# Example: export WEBCAM_RTSP_URL="rtsp://172.25.192.1:8554/webcam"
+RTSP_URL = os.environ.get("WEBCAM_RTSP_URL", None)
+
+
+def get_video_capture() -> cv2.VideoCapture:
+    """Get video capture from webcam or RTSP stream.
+
+    If WEBCAM_RTSP_URL environment variable is set, uses RTSP stream
+    (for WSL2 streaming from Windows). Otherwise, uses direct webcam access.
+
+    Returns:
+        OpenCV VideoCapture object.
+    """
+    if RTSP_URL:
+        # WSL2 mode: use RTSP stream from Windows
+        return cv2.VideoCapture(RTSP_URL)
+    else:
+        # Native mode: direct webcam access
+        return cv2.VideoCapture(0)
+
+
+def get_capture_source_info() -> str:
+    """Get information about the current capture source.
+
+    Returns:
+        String describing the capture source (RTSP URL or 'device 0').
+    """
+    if RTSP_URL:
+        return f"RTSP stream ({RTSP_URL})"
+    else:
+        return "local webcam (device 0)"
 
 
 async def capture_webcam(
@@ -46,10 +84,12 @@ async def capture_webcam(
     # Validate duration
     duration = max(1.0, min(10.0, duration))
 
-    # Open webcam
-    cap = cv2.VideoCapture(0)
+    # Open video capture (webcam or RTSP stream)
+    cap = get_video_capture()
+    source_info = get_capture_source_info()
+
     if not cap.isOpened():
-        return "Error: Could not access webcam. Please check if a camera is connected."
+        return f"Error: Could not access {source_info}. Please check connection."
 
     try:
         if mode == "video":
@@ -81,18 +121,7 @@ async def _capture_image(cap: cv2.VideoCapture) -> str:
     # Save image
     cv2.imwrite(str(temp_path), frame)
 
-    # Display in Chainlit chat if available
-    if CHAINLIT_AVAILABLE:
-        try:
-            image_element = cl.Image(path=str(temp_path), name="webcam_capture")
-            await cl.Message(
-                content="Captured image from webcam:",
-                elements=[image_element]
-            ).send()
-        except Exception as e:
-            # If Chainlit display fails, continue anyway
-            pass
-
+    # Note: Image display is handled in app.py after tool execution
     return str(temp_path)
 
 
@@ -142,9 +171,12 @@ async def _capture_video(cap: cv2.VideoCapture, duration: float) -> str:
     # Display in Chainlit chat if available
     if CHAINLIT_AVAILABLE:
         try:
-            video_element = cl.Video(path=str(temp_path), name="webcam_video")
+            video_element = cl.Video(
+                path=str(temp_path),
+                name="webcam_video"
+            )
             await cl.Message(
-                content=f"Captured {duration:.1f}s video from webcam ({frame_count} frames):",
+                content=f"🎥 Captured {duration:.1f}s video from webcam ({frame_count} frames):",
                 elements=[video_element]
             ).send()
         except Exception as e:
@@ -198,13 +230,17 @@ def extract_video_frames(
 
 
 def test_webcam_availability() -> bool:
-    """Test if a webcam is available.
+    """Test if a webcam/RTSP stream is available.
 
     Returns:
-        True if webcam is accessible, False otherwise.
+        True if video source is accessible, False otherwise.
     """
-    cap = cv2.VideoCapture(0)
+    cap = get_video_capture()
     available = cap.isOpened()
+    if available:
+        # Try to read a frame to verify connection
+        ret, _ = cap.read()
+        available = ret
     cap.release()
     return available
 
@@ -216,9 +252,11 @@ def capture_image_sync() -> str:
     Returns:
         Path to the captured image file or error message.
     """
-    cap = cv2.VideoCapture(0)
+    cap = get_video_capture()
+    source_info = get_capture_source_info()
+
     if not cap.isOpened():
-        return "Error: Could not access webcam."
+        return f"Error: Could not access {source_info}."
 
     ret, frame = cap.read()
     cap.release()
@@ -242,9 +280,11 @@ def capture_video_sync(duration: float = 2.0) -> str:
     Returns:
         Path to the captured video file or error message.
     """
-    cap = cv2.VideoCapture(0)
+    cap = get_video_capture()
+    source_info = get_capture_source_info()
+
     if not cap.isOpened():
-        return "Error: Could not access webcam."
+        return f"Error: Could not access {source_info}."
 
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
