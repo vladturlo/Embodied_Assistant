@@ -230,6 +230,33 @@ chainlit run app.py
 - pillow >= 10.0
 - numpy >= 1.26
 
+## Debugging Notes
+
+### Image Analysis Fix (2026-01-28)
+**Problem**: Model was hallucinating image descriptions instead of analyzing actual images.
+
+**Root Cause**: With `reflect_on_tool_use=True`, the webcam tool returns only a file path string. The model received this text path, not the actual image data.
+
+**Fix implemented in app.py**:
+1. Track captured images during `ToolCallExecutionEvent`
+2. Display image inline with `cl.Image(display="inline")`
+3. After tool execution, send a follow-up `MultiModalMessage` with actual image data via `AGImage.from_file()`
+
+**Status**: Implemented, needs testing. Run the app and ask "capture webcam" to verify the model describes actual image content.
+
+### Quick Debug Commands
+```bash
+# Test RTSP connection
+export WEBCAM_RTSP_URL="rtsp://$(ip route list default | awk '{print $3}'):8554/webcam"
+python scripts/test_rtsp_connection.py
+
+# Test Ollama connection
+python tests/test_ollama_connection.py
+
+# Run app with verbose output
+chainlit run app.py --host 0.0.0.0 --port 8000 -w
+```
+
 ## Notes
 - Qwen3-VL supports native video understanding with timestamp alignment
 - Large model (235B parameters) - responses may take time
