@@ -13,7 +13,7 @@ from datetime import datetime
 
 # Configuration
 OLLAMA_HOST = "http://localhost:11435"
-MODEL_NAME = "qwen3-vl:238b"
+MODEL_NAME = "qwen3-vl:235b"
 
 
 # Define test tools with proper docstrings (required for Ollama)

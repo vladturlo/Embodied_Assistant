@@ -2,42 +2,77 @@
 
 This test verifies that the webcam can capture images and videos.
 
+Supports two modes:
+1. Direct webcam access (native Linux or Windows)
+2. RTSP streaming from Windows to WSL2 (set WEBCAM_RTSP_URL env var)
+
 Usage:
+    # Direct webcam
+    python tests/test_webcam_capture.py
+
+    # RTSP from Windows (WSL2)
+    export WEBCAM_RTSP_URL="rtsp://172.25.192.1:8554/webcam"
     python tests/test_webcam_capture.py
 """
 
+import os
 import sys
 import tempfile
 from pathlib import Path
 
 import cv2
 
+# Add project root to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from tools.webcam import get_video_capture, get_capture_source_info, RTSP_URL
+
 
 def test_webcam_available() -> bool:
-    """Test if webcam is accessible.
+    """Test if webcam/RTSP stream is accessible.
 
     Returns:
-        True if webcam opens successfully.
+        True if video source opens successfully.
     """
     print(f"\n{'='*60}")
-    print("Test 1: Webcam Availability")
+    print("Test 1: Video Source Availability")
     print(f"{'='*60}")
 
-    cap = cv2.VideoCapture(0)
+    source_info = get_capture_source_info()
+    print(f"Capture source: {source_info}")
+
+    cap = get_video_capture()
     available = cap.isOpened()
 
     if available:
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        print(f"Webcam found!")
-        print(f"  Resolution: {width}x{height}")
-        print(f"  FPS: {fps}")
-        print(f"\n[PASS] Webcam is available")
+        # Try to read a frame to verify connection
+        ret, frame = cap.read()
+        if ret:
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            print(f"Video source connected!")
+            print(f"  Resolution: {width}x{height}")
+            print(f"  FPS: {fps}")
+            print(f"  Frame shape: {frame.shape}")
+            print(f"\n[PASS] Video source is available")
+        else:
+            print("Connected but failed to read frame.")
+            print("For RTSP: Check if ffmpeg is streaming on Windows.")
+            print(f"\n[FAIL] Could not read frame")
+            available = False
     else:
-        print("No webcam found or could not open.")
-        print("Check if a camera is connected and not in use by another app.")
-        print(f"\n[FAIL] Webcam not available")
+        print("Could not connect to video source.")
+        if RTSP_URL:
+            print(f"RTSP URL: {RTSP_URL}")
+            print("Check that:")
+            print("  1. MediaMTX is running on Windows")
+            print("  2. ffmpeg is streaming the webcam")
+            print("  3. The IP address is correct")
+        else:
+            print("No webcam found or could not open.")
+            print("For WSL2: Set WEBCAM_RTSP_URL environment variable")
+        print(f"\n[FAIL] Video source not available")
 
     cap.release()
     return available
@@ -53,10 +88,10 @@ def test_capture_image() -> bool:
     print("Test 2: Image Capture")
     print(f"{'='*60}")
 
-    cap = cv2.VideoCapture(0)
+    cap = get_video_capture()
     if not cap.isOpened():
-        print("Cannot open webcam")
-        print(f"\n[FAIL] Webcam not available")
+        print(f"Cannot open {get_capture_source_info()}")
+        print(f"\n[FAIL] Video source not available")
         return False
 
     # Allow camera to warm up
@@ -104,10 +139,10 @@ def test_capture_video(duration: float = 2.0, fps: int = 15) -> bool:
     print(f"{'='*60}")
     print(f"Duration: {duration}s, Target FPS: {fps}")
 
-    cap = cv2.VideoCapture(0)
+    cap = get_video_capture()
     if not cap.isOpened():
-        print("Cannot open webcam")
-        print(f"\n[FAIL] Webcam not available")
+        print(f"Cannot open {get_capture_source_info()}")
+        print(f"\n[FAIL] Video source not available")
         return False
 
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -167,10 +202,10 @@ def test_multiple_captures() -> bool:
     print("Test 4: Multiple Captures")
     print(f"{'='*60}")
 
-    cap = cv2.VideoCapture(0)
+    cap = get_video_capture()
     if not cap.isOpened():
-        print("Cannot open webcam")
-        print(f"\n[FAIL] Webcam not available")
+        print(f"Cannot open {get_capture_source_info()}")
+        print(f"\n[FAIL] Video source not available")
         return False
 
     success_count = 0
@@ -204,13 +239,13 @@ def test_webcam_properties() -> bool:
         True if properties can be read.
     """
     print(f"\n{'='*60}")
-    print("Test 5: Webcam Properties")
+    print("Test 5: Video Source Properties")
     print(f"{'='*60}")
 
-    cap = cv2.VideoCapture(0)
+    cap = get_video_capture()
     if not cap.isOpened():
-        print("Cannot open webcam")
-        print(f"\n[FAIL] Webcam not available")
+        print(f"Cannot open {get_capture_source_info()}")
+        print(f"\n[FAIL] Video source not available")
         return False
 
     properties = {
@@ -235,10 +270,15 @@ def test_webcam_properties() -> bool:
 
 
 def run_all_tests():
-    """Run all webcam tests."""
+    """Run all video capture tests."""
     print("\n" + "="*60)
-    print("WEBCAM CAPTURE TESTS")
+    print("VIDEO CAPTURE TESTS")
     print("="*60)
+    print(f"Source: {get_capture_source_info()}")
+    if RTSP_URL:
+        print(f"Mode: RTSP streaming (WSL2)")
+    else:
+        print(f"Mode: Direct webcam access")
 
     results = {
         "webcam_available": test_webcam_available(),

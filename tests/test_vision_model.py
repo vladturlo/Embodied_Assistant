@@ -13,7 +13,7 @@ from pathlib import Path
 
 # Configuration
 OLLAMA_HOST = "http://localhost:11435"
-MODEL_NAME = "qwen3-vl:238b"
+MODEL_NAME = "qwen3-vl:235b"
 
 
 def get_client():
