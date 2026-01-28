@@ -114,6 +114,9 @@ chainlit run app.py --host 0.0.0.0 --port 8000
 - **Local Port**: 11435
 - **Remote Port**: 11434
 
+## GitHub Repository
+https://github.com/vladturlo/Embodied_Assistant
+
 ## Project Structure
 ```
 multimodal_agent/
@@ -124,10 +127,12 @@ multimodal_agent/
 ├── model_config.yaml      # Ollama model settings
 ├── tools/
 │   ├── __init__.py
-│   └── webcam.py          # Webcam capture tool (supports RTSP)
+│   └── webcam.py          # Webcam capture tool (supports RTSP, cross-platform ffmpeg)
 ├── scripts/               # Utility scripts
 │   ├── test_rtsp_connection.py   # Test RTSP from WSL2
-│   └── start_webcam_stream.ps1   # Windows streaming script
+│   ├── start_webcam_stream.ps1   # Windows RTSP streaming script
+│   ├── windows_setup.bat         # Windows one-time setup
+│   └── windows_run.bat           # Windows run script (pulls & runs)
 ├── tests/                 # Component tests (run before integration)
 │   ├── test_ollama_connection.py
 │   ├── test_vision_model.py
@@ -229,6 +234,47 @@ chainlit run app.py
 - opencv-python >= 4.9
 - pillow >= 10.0
 - numpy >= 1.26
+- ffmpeg (system) - for H.264 video encoding
+
+## Windows Setup (Native)
+
+For running directly on Windows (without WSL2):
+
+**Prerequisites:**
+1. Python 3.10+ installed
+2. ffmpeg in PATH or at `C:\ffmpeg\bin\`
+3. Git installed
+4. Ollama running locally or SSH tunnel to remote
+
+**One-time setup:**
+```powershell
+git clone https://github.com/vladturlo/Embodied_Assistant.git
+cd Embodied_Assistant
+scripts\windows_setup.bat
+```
+
+**Run the app:**
+```powershell
+scripts\windows_run.bat
+```
+
+The `windows_run.bat` script automatically pulls latest changes from GitHub before running.
+
+## Development Workflow
+
+**Develop in WSL2:**
+```bash
+cd /home/tuvl/projects/multimodal_agent
+source .venv/bin/activate
+# Make changes, test
+chainlit run app.py --host 0.0.0.0 --port 8000
+
+# Commit and push
+git add -A && git commit -m "Description" && git push
+```
+
+**Test on Windows:**
+Double-click `scripts\windows_run.bat` or run from PowerShell.
 
 ## Debugging Notes
 
@@ -245,6 +291,18 @@ chainlit run app.py
 5. For videos: extract frames using `extract_video_frames()` and send as multiple `AGImage` objects
 
 **Status**: Fixed. The model now receives actual image data and provides accurate descriptions.
+
+### Video Playback Fix (2026-01-28)
+**Problem**: Captured videos not playable in browser.
+
+**Root Cause**: OpenCV's `mp4v` codec (MPEG-4 Part 2) is not browser-compatible. Browsers require H.264.
+
+**Fix implemented in tools/webcam.py**:
+1. After OpenCV saves video, re-encode with ffmpeg to H.264
+2. Added `_get_ffmpeg_path()` for cross-platform ffmpeg detection
+3. Fixed FPS to use actual capture device rate instead of hardcoded 15fps
+
+**Status**: Fixed. Videos now play in Chainlit UI.
 
 ### Quick Debug Commands
 ```bash
