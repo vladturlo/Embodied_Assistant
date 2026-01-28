@@ -11,6 +11,20 @@ Enables real-time visual interaction through webcam capture and image/video anal
 - **Tools**: Webcam capture (image/video)
 - **Context**: 256K tokens (maximum)
 
+## Initial Setup (One-time)
+```bash
+# Install python3-venv if not available (requires sudo)
+sudo apt install python3.12-venv python3-pip
+
+# Create virtual environment
+cd /home/tuvl/projects/multimodal_agent
+python3 -m venv .venv
+
+# Activate and install dependencies
+source .venv/bin/activate
+pip install -e ".[dev]"
+```
+
 ## Running the Application
 ```bash
 # Activate virtual environment
