@@ -7,6 +7,12 @@ Usage:
     chainlit run app.py
 """
 
+# Windows asyncio compatibility fix - must be before other imports
+import sys
+if sys.platform == 'win32':
+    import asyncio
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 from pathlib import Path
 from typing import List, cast
 

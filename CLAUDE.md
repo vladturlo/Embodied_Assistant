@@ -110,9 +110,61 @@ chainlit run app.py --host 0.0.0.0 --port 8000
 
 ### Current Configuration
 - **Model**: qwen3-vl:235b
-- **Node**: nid005376
+- **Node**: (dynamic - ask CSCS admin for current node)
 - **Local Port**: 11435
 - **Remote Port**: 11434
+
+### Windows SSH Tunnel (PowerShell)
+
+For running from Windows natively with automatic ssh-agent.
+
+**Scripts location:** `%USERPROFILE%\.ssh\`
+- `setup-cscs-ssh.bat` - First-time setup (run once)
+- `refresh-cscs-keys.bat` - Refresh expired keys (run daily)
+- `start-cscs-tunnel.ps1` - Start SSH tunnel
+- `stop-cscs-tunnel.ps1` - Stop SSH tunnel
+
+#### First-Time Setup (New Users)
+
+1. Download `cscs-key` and `cscs-key-cert.pub` from [CSCS SSH Service](https://sshservice.cscs.ch/)
+2. Place both files in your `Downloads` folder
+3. Double-click `setup-cscs-ssh.bat`
+4. Enter your CSCS username when prompted
+
+#### Daily Key Refresh
+
+CSCS keys expire every 24 hours. To refresh:
+
+1. Download new keys from [CSCS SSH Service](https://sshservice.cscs.ch/)
+2. Place both files in your `Downloads` folder
+3. Double-click `refresh-cscs-keys.bat`
+
+#### Daily Usage
+
+**Start tunnel:**
+```powershell
+cd $env:USERPROFILE\.ssh
+.\start-cscs-tunnel.ps1
+# Enter passphrase once when prompted
+# Enter node ID when prompted (e.g., nid005376)
+```
+
+**With node ID parameter:**
+```powershell
+.\start-cscs-tunnel.ps1 -NodeId nid005376
+```
+
+**Stop tunnel:**
+```powershell
+.\stop-cscs-tunnel.ps1
+```
+
+**Features:**
+- Automatically starts Windows ssh-agent service
+- Adds SSH key to agent (passphrase entered once per session)
+- Prompts for dynamic node ID
+- Runs tunnel in background (can close PowerShell window)
+- Verifies connection to Ollama
 
 ## GitHub Repository
 https://github.com/vladturlo/Embodied_Assistant
@@ -244,17 +296,27 @@ For running directly on Windows (without WSL2):
 1. Python 3.10+ installed
 2. ffmpeg in PATH or at `C:\ffmpeg\bin\`
 3. Git installed
-4. Ollama running locally or SSH tunnel to remote
 
 **One-time setup:**
 ```powershell
+# 1. Clone the repo
 git clone https://github.com/vladturlo/Embodied_Assistant.git
 cd Embodied_Assistant
 scripts\windows_setup.bat
+
+# 2. Setup SSH tunnel to CSCS (if using remote Ollama)
+# Download cscs-key and cscs-key-cert.pub to Downloads folder first
+%USERPROFILE%\.ssh\setup-cscs-ssh.bat
 ```
 
 **Run the app:**
 ```powershell
+# 1. Start SSH tunnel (if using remote Ollama)
+cd $env:USERPROFILE\.ssh
+.\start-cscs-tunnel.ps1
+
+# 2. Run the app (in another terminal)
+cd Embodied_Assistant
 scripts\windows_run.bat
 ```
 
