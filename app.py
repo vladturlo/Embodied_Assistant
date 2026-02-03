@@ -32,6 +32,7 @@ from autogen_core.models import ModelInfo
 from autogen_ext.models.ollama import OllamaChatCompletionClient
 
 from tools.webcam import capture_webcam, extract_video_frames
+from tools.mouse import move_mouse, get_mouse_position, get_screen_size
 
 # Configuration
 OLLAMA_HOST = "http://localhost:11435"
@@ -113,6 +114,34 @@ async def webcam_capture_tool(mode: str = "image", duration: float = 3.0) -> str
     return result
 
 
+@cl.step(type="tool")
+async def mouse_move_tool(direction: str, distance: int = 50) -> str:
+    """Move the mouse cursor in a direction.
+
+    Use this tool to control the mouse based on visual input.
+    For embodied control, combine with webcam_capture_tool to create
+    a feedback loop: capture -> analyze -> move -> capture -> ...
+
+    Args:
+        direction: One of "up", "down", "left", "right"
+        distance: Pixels to move (default 50, max 200)
+
+    Returns:
+        Result message with new cursor position.
+    """
+    return move_mouse(direction, distance)
+
+
+@cl.step(type="tool")
+async def mouse_position_tool() -> str:
+    """Get current mouse cursor position.
+
+    Returns:
+        String with current mouse coordinates.
+    """
+    return get_mouse_position()
+
+
 @cl.set_starters
 async def set_starters() -> List[cl.Starter]:
     """Set starter prompts for the chat interface.
@@ -122,20 +151,20 @@ async def set_starters() -> List[cl.Starter]:
     """
     return [
         cl.Starter(
+            label="Embodied Control",
+            message="Move the mouse in the direction my thumb is pointing. Keep taking snapshots and moving until I close my fist.",
+        ),
+        cl.Starter(
             label="Webcam Capture",
             message="Take a picture with the webcam and tell me what you see.",
         ),
         cl.Starter(
+            label="Mouse Control",
+            message="Move the mouse to the right by 100 pixels.",
+        ),
+        cl.Starter(
             label="Image Analysis",
             message="I'll upload an image for you to analyze.",
-        ),
-        cl.Starter(
-            label="Video Capture",
-            message="Record a short video from the webcam and describe what happens.",
-        ),
-        cl.Starter(
-            label="General Chat",
-            message="Hello! What can you help me with today?",
         ),
     ]
 
@@ -146,21 +175,42 @@ async def start_chat() -> None:
     # Create model client
     model_client = create_model_client()
 
-    # Create the assistant agent with webcam tool
+    # Create the assistant agent with webcam and mouse tools
     assistant = AssistantAgent(
         name="multimodal_assistant",
         model_client=model_client,
-        tools=[webcam_capture_tool],
-        system_message="""You are a helpful multimodal AI assistant with vision capabilities.
+        tools=[webcam_capture_tool, mouse_move_tool, mouse_position_tool],
+        system_message="""You are a helpful multimodal AI assistant with vision and mouse control capabilities.
 
 You can:
 1. Analyze images that users upload
-2. Capture images or short videos from the webcam using the webcam_capture_tool
-3. Describe what you see in images and videos
-4. Answer questions about visual content
+2. Capture images or short videos from the webcam using webcam_capture_tool
+3. Control the mouse cursor using mouse_move_tool (directions: up, down, left, right)
+4. Get the current mouse position using mouse_position_tool
 
-When users ask you to "look", "see", "capture", or use the webcam, use the webcam_capture_tool.
+When users ask you to "look", "see", "capture", or use the webcam, use webcam_capture_tool.
 After capturing, analyze the image and describe what you see.
+
+## Embodied Control Mode
+
+When the user asks you to control the mouse based on visual input (e.g., "move mouse where I'm pointing"):
+
+1. First capture an image using webcam_capture_tool to see the current state
+2. Analyze what you see (e.g., pointing direction, hand gesture)
+3. Decide on an action: move mouse in a direction, or stop if the stop condition is met
+4. Execute the action using mouse_move_tool
+5. Capture another image to see the new state
+6. Repeat steps 2-5 until the stop condition is met
+
+Example stop conditions the user might give:
+- "until I close my fist"
+- "until I say stop"
+- "until you don't see my hand"
+
+Always explain what you see and what action you're taking.
+Move in small increments (50-100px) for precise control.
+
+SAFETY: Moving the mouse to any screen corner will trigger FAILSAFE and abort all mouse operations.
 
 Be helpful, accurate, and descriptive in your visual analysis.""",
         model_client_stream=True,
@@ -172,11 +222,13 @@ Be helpful, accurate, and descriptive in your visual analysis.""",
 
     # Send welcome message
     await cl.Message(
-        content="Hello! I'm a multimodal AI assistant. I can:\n"
+        content="Hello! I'm a multimodal AI assistant with embodied control capabilities. I can:\n"
                 "- Analyze images you upload\n"
                 "- Capture images/videos from your webcam\n"
+                "- Control the mouse cursor based on visual input\n"
                 "- Answer questions about visual content\n\n"
-                "Try uploading an image or ask me to use the webcam!"
+                "**Embodied Control**: Try asking me to move the mouse based on your hand gestures!\n\n"
+                "Example: \"Move the mouse in the direction my thumb is pointing. Keep going until I close my fist.\""
     ).send()
 
 

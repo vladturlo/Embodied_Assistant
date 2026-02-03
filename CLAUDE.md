@@ -8,7 +8,7 @@ Enables real-time visual interaction through webcam capture and image/video anal
 - **Frontend**: Chainlit web UI with file upload and media display
 - **Backend**: AutoGen AssistantAgent with vision model
 - **Model**: qwen3-vl:235b via Ollama (localhost:11435)
-- **Tools**: Webcam capture (image/video)
+- **Tools**: Webcam capture (image/video), Mouse control
 - **Context**: 256K tokens (maximum)
 
 ## Initial Setup (One-time)
@@ -179,7 +179,8 @@ multimodal_agent/
 ├── model_config.yaml      # Ollama model settings
 ├── tools/
 │   ├── __init__.py
-│   └── webcam.py          # Webcam capture tool (supports RTSP, cross-platform ffmpeg)
+│   ├── webcam.py          # Webcam capture tool (supports RTSP, cross-platform ffmpeg)
+│   └── mouse.py           # Mouse control tool (pyautogui)
 ├── scripts/               # Utility scripts
 │   ├── test_rtsp_connection.py   # Test RTSP from WSL2
 │   ├── start_webcam_stream.ps1   # Windows RTSP streaming script
@@ -192,7 +193,8 @@ multimodal_agent/
 │   ├── test_video_frames.py
 │   ├── test_multimodal_message.py
 │   ├── test_chainlit_elements.py
-│   └── test_agent_tools.py
+│   ├── test_agent_tools.py
+│   └── test_mouse.py      # Mouse control tests
 ├── test_assets/           # Test images/videos
 └── app.py                 # Main application
 ```
@@ -224,6 +226,9 @@ chainlit run tests/test_chainlit_elements.py
 
 # 7. Test agent tools
 python tests/test_agent_tools.py
+
+# 8. Test mouse control (Windows only - moves cursor!)
+python tests/test_mouse.py
 ```
 
 ## Model Configuration
@@ -238,6 +243,35 @@ The agent can capture images and short videos from the webcam:
 - **Image mode**: Single frame capture
 - **Video mode**: Short clip (up to 10 seconds)
 - Captured media is displayed in chat for both user and agent to see
+
+## Mouse Control Tool
+The agent can control the mouse cursor using pyautogui:
+- **Directions**: up, down, left, right
+- **Distance**: 1-200 pixels per move (safety limited)
+- **FAILSAFE**: Move mouse to screen corner to abort all operations
+
+## Embodied Control Mode
+The agent can operate in a feedback loop, combining vision and mouse control:
+
+**How it works:**
+1. User gives an instruction with a stop condition
+2. Model captures image with webcam
+3. Model analyzes visual input (e.g., hand gesture direction)
+4. Model moves mouse accordingly
+5. Model captures another image
+6. Repeat until stop condition is met
+
+**Example prompts:**
+```
+"Move the mouse in the direction my thumb is pointing. Keep going until I close my fist."
+"Follow my finger with the mouse cursor until I say stop."
+"Move the mouse up when I raise my hand, down when I lower it."
+```
+
+**Safety features:**
+- Maximum 200px movement per tool call
+- 100ms pause between actions
+- FAILSAFE: Move mouse to any screen corner to abort
 
 ### WSL2 Webcam Support (RTSP Streaming)
 WSL2 cannot access Windows webcam directly. Use RTSP streaming instead:
@@ -286,6 +320,7 @@ chainlit run app.py
 - opencv-python >= 4.9
 - pillow >= 10.0
 - numpy >= 1.26
+- pyautogui >= 0.9.54 - for mouse control
 - ffmpeg (system) - for H.264 video encoding
 
 ## Windows Setup (Native)
