@@ -8,7 +8,7 @@
 #   - ministral-3:14b (remote, fast, check vision support)
 
 provider: ollama
-model: ministral-3:14b
+model: qwen3-vl:32b
 host: http://localhost:11435
 
 # Model capabilities
