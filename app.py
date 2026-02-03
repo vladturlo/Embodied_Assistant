@@ -20,7 +20,6 @@ if sys.platform == 'win32':
 
 import asyncio
 import tempfile
-import time
 from pathlib import Path
 from typing import List, Optional, cast
 
@@ -40,7 +39,7 @@ from autogen_core.models import ModelInfo
 from autogen_ext.models.ollama import OllamaChatCompletionClient
 
 from tools.webcam import capture_webcam, extract_video_frames
-from tools.live_capture import LiveCaptureService, frames_to_images
+from tools.live_capture import LiveCaptureService
 
 # Configuration
 OLLAMA_HOST = "http://localhost:11435"
@@ -56,7 +55,6 @@ LIVE_VISION_ENABLED = False
 LIVE_CAPTURE_FPS = 2.0
 LIVE_BUFFER_SECONDS = 5.0
 LIVE_MAX_FRAMES_PER_MESSAGE = 10
-LIVE_PREVIEW_FPS = 2.0
 LIVE_INACTIVITY_TIMEOUT = 300
 LIVE_ADD_TIMESTAMP = True
 
@@ -71,8 +69,7 @@ def load_model_config() -> dict:
     """
     global VIDEO_FRAMES_PER_SECOND, VIDEO_MAX_FRAMES
     global LIVE_VISION_ENABLED, LIVE_CAPTURE_FPS, LIVE_BUFFER_SECONDS
-    global LIVE_MAX_FRAMES_PER_MESSAGE, LIVE_PREVIEW_FPS
-    global LIVE_INACTIVITY_TIMEOUT, LIVE_ADD_TIMESTAMP
+    global LIVE_MAX_FRAMES_PER_MESSAGE, LIVE_INACTIVITY_TIMEOUT, LIVE_ADD_TIMESTAMP
 
     config_path = Path(__file__).parent / "model_config.yaml"
     if config_path.exists():
@@ -96,8 +93,6 @@ def load_model_config() -> dict:
             LIVE_BUFFER_SECONDS = float(live_config["buffer_seconds"])
         if "max_frames_per_message" in live_config:
             LIVE_MAX_FRAMES_PER_MESSAGE = int(live_config["max_frames_per_message"])
-        if "preview_fps" in live_config:
-            LIVE_PREVIEW_FPS = float(live_config["preview_fps"])
         if "inactivity_timeout" in live_config:
             LIVE_INACTIVITY_TIMEOUT = int(live_config["inactivity_timeout"])
         if "add_timestamp_overlay" in live_config:
@@ -176,11 +171,6 @@ async def start_live_vision() -> tuple[bool, str]:
     # Start capture
     if capture_service.start():
         cl.user_session.set("live_mode", True)
-
-        # Start preview update task
-        preview_task = asyncio.create_task(update_live_preview())
-        cl.user_session.set("preview_task", preview_task)
-
         return True, "Live Vision started - I can now see your camera continuously"
     else:
         error = capture_service.error_message or "Unknown error"
@@ -199,84 +189,11 @@ async def stop_live_vision() -> tuple[bool, str]:
         cl.user_session.set("live_mode", False)
         return True, "Live Vision is not running"
 
-    # Cancel preview task
-    preview_task = cl.user_session.get("preview_task")
-    if preview_task:
-        preview_task.cancel()
-        try:
-            await preview_task
-        except asyncio.CancelledError:
-            pass
-        cl.user_session.set("preview_task", None)
-
     # Stop capture
     capture_service.stop()
     cl.user_session.set("live_mode", False)
 
     return True, "Live Vision stopped"
-
-
-async def update_live_preview():
-    """Background task to update the live preview in the UI."""
-    preview_interval = 1.0 / LIVE_PREVIEW_FPS
-    temp_dir = Path(tempfile.mkdtemp())
-    preview_path = temp_dir / "live_preview.jpg"
-    preview_msg: Optional[cl.Message] = None
-
-    try:
-        while True:
-            capture_service = cl.user_session.get("capture_service")
-            if not capture_service or not capture_service.is_running:
-                break
-
-            frame = capture_service.get_latest_frame()
-            if frame:
-                # Save frame as JPEG
-                frame.image.save(str(preview_path), "JPEG", quality=80)
-
-                # Create or update preview message
-                if preview_msg is None:
-                    preview_element = cl.Image(
-                        path=str(preview_path),
-                        name="live_preview",
-                        display="inline",
-                        size="medium"
-                    )
-                    preview_msg = cl.Message(
-                        content="**Live Preview** (updating...)",
-                        elements=[preview_element]
-                    )
-                    await preview_msg.send()
-                else:
-                    # Update existing preview by sending new message
-                    # (Chainlit doesn't support true in-place image updates)
-                    try:
-                        await preview_msg.remove()
-                    except Exception:
-                        pass
-
-                    preview_element = cl.Image(
-                        path=str(preview_path),
-                        name="live_preview",
-                        display="inline",
-                        size="medium"
-                    )
-                    preview_msg = cl.Message(
-                        content="**Live Preview** (updating...)",
-                        elements=[preview_element]
-                    )
-                    await preview_msg.send()
-
-            await asyncio.sleep(preview_interval)
-
-    except asyncio.CancelledError:
-        # Clean up preview message on cancel
-        if preview_msg:
-            try:
-                await preview_msg.remove()
-            except Exception:
-                pass
-        raise
 
 
 async def take_snapshot() -> tuple[bool, str, Optional[str]]:
@@ -427,7 +344,6 @@ Be helpful, accurate, and descriptive in your visual analysis.""",
     # Initialize live vision state
     cl.user_session.set("live_mode", False)
     cl.user_session.set("capture_service", None)
-    cl.user_session.set("preview_task", None)
 
     # Send welcome message
     await cl.Message(
