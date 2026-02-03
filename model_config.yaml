@@ -2,13 +2,13 @@
 # Used by the multimodal agent for vision and text processing
 #
 # Available models:
-#   - qwen3-vl:2b     (local, fits on 4GB VRAM)
-#   - qwen3-vl:32b    (remote, balanced speed/quality)
-#   - qwen3-vl:235b   (remote, highest quality, slow)
-#   - ministral-3:14b (remote, fast, check vision support)
+#   - qwen3-vl:2b       (local, fits on 4GB VRAM)
+#   - qwen3-vl:30b-a3b  (remote, MoE - only 3B active per token, fast)
+#   - qwen3-vl:32b      (remote, balanced speed/quality)
+#   - qwen3-vl:235b     (remote, highest quality, slow)
 
 provider: ollama
-model: qwen3-vl:32b
+model: qwen3-vl:30b-a3b
 host: http://localhost:11435
 
 # Model capabilities
@@ -21,7 +21,7 @@ capabilities:
 # Generation options
 options:
   temperature: 0.7
-  num_ctx: 8192  # 8K context for faster inference
+  num_ctx: 262144  # 256K full context
 
 # Model info for AutoGen
 model_info:
