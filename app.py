@@ -13,6 +13,7 @@ if sys.platform == 'win32':
     import asyncio
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
+import re
 from pathlib import Path
 from typing import List, Optional, cast
 
@@ -42,6 +43,11 @@ CONTEXT_SIZE = 262144  # 256K context
 # Video processing defaults (can be overridden in model_config.yaml)
 VIDEO_FRAMES_PER_SECOND = 5.0
 VIDEO_MAX_FRAMES = 50
+
+# Embodied control settings
+EMBODIED_MAX_ITERATIONS = 50  # Safety limit
+EMBODIED_KEYWORDS = ["until", "keep going", "keep taking", "continuously", "feedback loop"]
+STOP_INDICATORS = ["stop", "stopped", "stopping", "fist", "closed fist", "abort", "done", "finished"]
 
 
 def load_model_config() -> dict:
@@ -242,17 +248,101 @@ Be helpful, accurate, and descriptive in your visual analysis.""",
     ).send()
 
 
+def detect_embodied_mode(text: str) -> bool:
+    """Check if the message requests embodied control mode."""
+    text_lower = text.lower()
+    return any(keyword in text_lower for keyword in EMBODIED_KEYWORDS)
+
+
+def detect_stop_condition(text: str) -> bool:
+    """Check if the model's response indicates stopping."""
+    text_lower = text.lower()
+    return any(indicator in text_lower for indicator in STOP_INDICATORS)
+
+
+async def run_agent_turn(agent: AssistantAgent, agent_message, embodied_mode: bool = False):
+    """Run a single turn of the agent and return results.
+
+    Returns:
+        tuple: (response_text, captured_image_path, used_mouse, failsafe_triggered)
+    """
+    response_text = ""
+    captured_image_path = None
+    used_mouse = False
+    failsafe_triggered = False
+
+    response_msg = cl.Message(content="")
+
+    async for event in agent.on_messages_stream(
+        messages=[agent_message],
+        cancellation_token=CancellationToken(),
+    ):
+        if isinstance(event, ModelClientStreamingChunkEvent):
+            if event.content:
+                await response_msg.stream_token(event.content)
+                response_text += event.content
+
+        elif isinstance(event, ToolCallRequestEvent):
+            for call in event.content:
+                await cl.Message(content=f"Using tool: **{call.name}**").send()
+
+        elif isinstance(event, ToolCallExecutionEvent):
+            for result in event.content:
+                if result.is_error:
+                    await cl.Message(content=f"Tool error: {result.content}").send()
+                else:
+                    # Check for FAILSAFE
+                    if "FAILSAFE" in result.content:
+                        failsafe_triggered = True
+
+                    # Check for mouse movement
+                    if "Moved mouse" in result.content:
+                        used_mouse = True
+
+                    # Check if result is a captured image path
+                    try:
+                        result_path = Path(result.content)
+                        if result_path.exists():
+                            suffix = result_path.suffix.lower()
+                            if suffix in ['.jpg', '.jpeg', '.png']:
+                                img_element = cl.Image(
+                                    path=str(result_path),
+                                    name="captured_image",
+                                    display="inline"
+                                )
+                                await cl.Message(
+                                    content="📷 Captured:",
+                                    elements=[img_element]
+                                ).send()
+                                captured_image_path = result_path
+                    except Exception:
+                        pass
+
+        elif isinstance(event, Response):
+            if response_msg.content:
+                await response_msg.send()
+            else:
+                final_content = event.chat_message.content
+                if final_content:
+                    response_text = final_content
+                    await cl.Message(content=final_content).send()
+
+    return response_text, captured_image_path, used_mouse, failsafe_triggered
+
+
 @cl.on_message
 async def on_message(message: cl.Message) -> None:
-    """Handle incoming messages from the user.
-
-    Args:
-        message: The incoming Chainlit message.
-    """
+    """Handle incoming messages from the user."""
     agent = cast(AssistantAgent, cl.user_session.get("agent"))
 
     if agent is None:
         await cl.Message(content="Error: Agent not initialized. Please refresh.").send()
+        return
+
+    # Check if user wants to stop embodied mode
+    if message.content and message.content.lower().strip() in ["stop", "cancel", "abort"]:
+        cl.user_session.set("embodied_mode", False)
+        await cl.Message(content="Stopped.").send()
         return
 
     # Check for image attachments
@@ -262,12 +352,9 @@ async def on_message(message: cl.Message) -> None:
     # Build the message for the agent
     if images or videos:
         content = []
-
-        # Add text content if present
         if message.content:
             content.append(message.content)
 
-        # Add images
         for img in images:
             try:
                 ag_image = AGImage.from_file(Path(img.path))
@@ -275,137 +362,104 @@ async def on_message(message: cl.Message) -> None:
             except Exception as e:
                 await cl.Message(content=f"Error loading image {img.name}: {e}").send()
 
-        # Handle videos - extract frames for analysis
         for vid in videos:
             try:
                 frames = extract_video_frames(vid.path, VIDEO_FRAMES_PER_SECOND, VIDEO_MAX_FRAMES)
                 if frames:
                     content.append(f"[Video: {vid.name} - {len(frames)} frames extracted]")
-                    for i, frame in enumerate(frames):
+                    for frame in frames:
                         content.append(AGImage(frame))
-                else:
-                    content.append(f"[Video: {vid.name} - could not extract frames]")
             except Exception as e:
                 await cl.Message(content=f"Error processing video {vid.name}: {e}").send()
 
-        # Create multimodal message
-        if len(content) > 0:
-            agent_message = MultiModalMessage(content=content, source="user")
-        else:
-            agent_message = TextMessage(content=message.content or "Analyze this", source="user")
+        agent_message = MultiModalMessage(content=content, source="user") if content else TextMessage(content=message.content or "Analyze this", source="user")
     else:
-        # Text-only message
         agent_message = TextMessage(content=message.content, source="user")
 
-    # Create response message for streaming
-    response_msg = cl.Message(content="")
-    captured_images = []  # Track captured images for follow-up analysis
+    # Detect embodied control mode
+    embodied_mode = detect_embodied_mode(message.content or "")
+    if embodied_mode:
+        cl.user_session.set("embodied_mode", True)
+        cl.user_session.set("embodied_instruction", message.content)
 
     try:
-        # Stream the response
-        async for event in agent.on_messages_stream(
-            messages=[agent_message],
-            cancellation_token=CancellationToken(),
-        ):
-            if isinstance(event, ModelClientStreamingChunkEvent):
-                # Stream text chunks
-                if event.content:
-                    await response_msg.stream_token(event.content)
+        # Run first turn
+        response_text, captured_image, used_mouse, failsafe = await run_agent_turn(
+            agent, agent_message, embodied_mode
+        )
 
-            elif isinstance(event, ToolCallRequestEvent):
-                # Tool is being called
-                for call in event.content:
-                    await cl.Message(
-                        content=f"Using tool: **{call.name}**"
-                    ).send()
+        # If in embodied mode, continue the loop
+        if embodied_mode and captured_image and used_mouse and not failsafe:
+            iteration = 1
 
-            elif isinstance(event, ToolCallExecutionEvent):
-                # Tool execution completed
-                for result in event.content:
-                    if result.is_error:
-                        await cl.Message(
-                            content=f"Tool error: {result.content}"
-                        ).send()
-                    else:
-                        # Check if result is a captured media path
-                        result_path = Path(result.content)
-                        if result_path.exists():
-                            suffix = result_path.suffix.lower()
-                            if suffix in ['.jpg', '.jpeg', '.png']:
-                                # Display captured image in chat
-                                img_element = cl.Image(
-                                    path=str(result_path),
-                                    name="captured_image",
-                                    display="inline"
-                                )
-                                await cl.Message(
-                                    content="📷 Captured from webcam:",
-                                    elements=[img_element]
-                                ).send()
-                                # Store for follow-up analysis
-                                captured_images.append(("image", result_path))
-                            elif suffix in ['.mp4', '.avi', '.mov']:
-                                # Video is already displayed by webcam tool
-                                # Store for follow-up analysis
-                                captured_images.append(("video", result_path))
+            while iteration < EMBODIED_MAX_ITERATIONS:
+                # Check if model indicated stop
+                if detect_stop_condition(response_text):
+                    await cl.Message(content=f"**Embodied control stopped** (detected stop condition after {iteration} iterations)").send()
+                    break
 
-            elif isinstance(event, Response):
-                # Final response
-                if response_msg.content:
-                    await response_msg.send()
-                else:
-                    # If no streaming content, send the final response
-                    final_content = event.chat_message.content
-                    if final_content:
-                        await cl.Message(content=final_content).send()
+                iteration += 1
 
-        # If media was captured, send to model for analysis
-        if captured_images:
-            # Build multimodal message with captured media
-            analysis_content = []
-            has_video = False
+                # Build continuation message with the captured image
+                continuation_content = [
+                    AGImage.from_file(captured_image),
+                    "Continue: analyze this image and take the next action. Remember the instruction and stop condition."
+                ]
+                continuation_msg = MultiModalMessage(content=continuation_content, source="user")
 
-            for media_type, media_path in captured_images:
-                if media_type == "image":
-                    analysis_content.append(AGImage.from_file(media_path))
-                elif media_type == "video":
-                    has_video = True
-                    # Extract frames from video for vision analysis
-                    frames = extract_video_frames(str(media_path), VIDEO_FRAMES_PER_SECOND, VIDEO_MAX_FRAMES)
-                    if frames:
-                        analysis_content.append(f"[Video with {len(frames)} frames]")
-                        for frame in frames:
-                            analysis_content.append(AGImage(frame))
+                # Run next turn
+                response_text, captured_image, used_mouse, failsafe = await run_agent_turn(
+                    agent, continuation_msg, embodied_mode=True
+                )
 
-            if analysis_content:
-                # Add prompt based on content type
-                if has_video:
-                    prompt = "Describe what you see happening in this video (shown as frames):"
-                else:
-                    prompt = "Describe what you see in this image in detail:"
-                analysis_content.insert(0, prompt)
+                # Check stop conditions
+                if failsafe:
+                    await cl.Message(content="**FAILSAFE triggered** - embodied control stopped.").send()
+                    break
 
-                analysis_msg = MultiModalMessage(content=analysis_content, source="user")
+                if not captured_image or not used_mouse:
+                    # Model didn't capture or move - might have decided to stop
+                    if detect_stop_condition(response_text):
+                        await cl.Message(content=f"**Embodied control stopped** (after {iteration} iterations)").send()
+                    break
 
-                # Get analysis from model and stream response
-                analysis_response = cl.Message(content="")
-                async for event in agent.on_messages_stream(
-                    messages=[analysis_msg],
-                    cancellation_token=CancellationToken(),
-                ):
-                    if isinstance(event, ModelClientStreamingChunkEvent):
-                        if event.content:
-                            await analysis_response.stream_token(event.content)
-                    elif isinstance(event, Response):
-                        if analysis_response.content:
-                            await analysis_response.send()
-                        elif event.chat_message.content:
-                            await cl.Message(content=event.chat_message.content).send()
+                # Check if user session was manually stopped
+                if not cl.user_session.get("embodied_mode", False):
+                    await cl.Message(content="**Embodied control cancelled by user.**").send()
+                    break
+
+            if iteration >= EMBODIED_MAX_ITERATIONS:
+                await cl.Message(content=f"**Embodied control stopped** (reached max {EMBODIED_MAX_ITERATIONS} iterations)").send()
+
+            cl.user_session.set("embodied_mode", False)
+
+        # If not embodied mode but media was captured, send for analysis
+        elif captured_image and not embodied_mode:
+            analysis_content = [
+                "Describe what you see in this image in detail:",
+                AGImage.from_file(captured_image)
+            ]
+            analysis_msg = MultiModalMessage(content=analysis_content, source="user")
+
+            analysis_response = cl.Message(content="")
+            async for event in agent.on_messages_stream(
+                messages=[analysis_msg],
+                cancellation_token=CancellationToken(),
+            ):
+                if isinstance(event, ModelClientStreamingChunkEvent):
+                    if event.content:
+                        await analysis_response.stream_token(event.content)
+                elif isinstance(event, Response):
+                    if analysis_response.content:
+                        await analysis_response.send()
+                    elif event.chat_message.content:
+                        await cl.Message(content=event.chat_message.content).send()
 
     except Exception as e:
         await cl.Message(content=f"Error: {e}").send()
         import traceback
         traceback.print_exc()
+        cl.user_session.set("embodied_mode", False)
 
 
 @cl.on_stop
