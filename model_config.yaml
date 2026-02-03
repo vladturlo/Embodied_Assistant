@@ -40,3 +40,14 @@ model_info:
 video:
   frames_per_second: 5.0  # Frames to extract per second of video
   max_frames: 50          # Maximum frames to prevent overload on long videos
+
+# Live Vision mode settings
+# Enables continuous camera streaming so the model can see without tool calls
+live_vision:
+  enabled: false              # Default state when app starts
+  capture_fps: 2.0            # Frames per second to capture (1-5 recommended)
+  buffer_seconds: 5.0         # Keep last N seconds of frames
+  max_frames_per_message: 10  # Max frames to inject per user message
+  preview_fps: 2.0            # UI preview refresh rate
+  inactivity_timeout: 300     # Auto-stop after N seconds of no activity (5 min)
+  add_timestamp_overlay: true # Add timestamp text to frames

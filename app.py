@@ -3,6 +3,11 @@
 This is the main application that integrates AutoGen with Chainlit
 to provide a multimodal AI agent with webcam capabilities.
 
+Features:
+- Image/video upload and analysis
+- Webcam capture via tool
+- Live Vision mode: continuous camera streaming
+
 Usage:
     chainlit run app.py
 """
@@ -13,8 +18,11 @@ if sys.platform == 'win32':
     import asyncio
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
+import asyncio
+import tempfile
+import time
 from pathlib import Path
-from typing import List, cast
+from typing import List, Optional, cast
 
 import chainlit as cl
 import yaml
@@ -32,6 +40,7 @@ from autogen_core.models import ModelInfo
 from autogen_ext.models.ollama import OllamaChatCompletionClient
 
 from tools.webcam import capture_webcam, extract_video_frames
+from tools.live_capture import LiveCaptureService, frames_to_images
 
 # Configuration
 OLLAMA_HOST = "http://localhost:11435"
@@ -42,16 +51,28 @@ CONTEXT_SIZE = 262144  # 256K context
 VIDEO_FRAMES_PER_SECOND = 5.0
 VIDEO_MAX_FRAMES = 50
 
+# Live Vision defaults (can be overridden in model_config.yaml)
+LIVE_VISION_ENABLED = False
+LIVE_CAPTURE_FPS = 2.0
+LIVE_BUFFER_SECONDS = 5.0
+LIVE_MAX_FRAMES_PER_MESSAGE = 10
+LIVE_PREVIEW_FPS = 2.0
+LIVE_INACTIVITY_TIMEOUT = 300
+LIVE_ADD_TIMESTAMP = True
+
 
 def load_model_config() -> dict:
     """Load model configuration from YAML file.
 
-    Also sets global video processing settings if defined.
+    Also sets global video and live_vision processing settings if defined.
 
     Returns:
         Configuration dictionary.
     """
     global VIDEO_FRAMES_PER_SECOND, VIDEO_MAX_FRAMES
+    global LIVE_VISION_ENABLED, LIVE_CAPTURE_FPS, LIVE_BUFFER_SECONDS
+    global LIVE_MAX_FRAMES_PER_MESSAGE, LIVE_PREVIEW_FPS
+    global LIVE_INACTIVITY_TIMEOUT, LIVE_ADD_TIMESTAMP
 
     config_path = Path(__file__).parent / "model_config.yaml"
     if config_path.exists():
@@ -64,6 +85,23 @@ def load_model_config() -> dict:
             VIDEO_FRAMES_PER_SECOND = float(video_config["frames_per_second"])
         if "max_frames" in video_config:
             VIDEO_MAX_FRAMES = int(video_config["max_frames"])
+
+        # Load live_vision settings if present
+        live_config = config.get("live_vision", {})
+        if "enabled" in live_config:
+            LIVE_VISION_ENABLED = bool(live_config["enabled"])
+        if "capture_fps" in live_config:
+            LIVE_CAPTURE_FPS = float(live_config["capture_fps"])
+        if "buffer_seconds" in live_config:
+            LIVE_BUFFER_SECONDS = float(live_config["buffer_seconds"])
+        if "max_frames_per_message" in live_config:
+            LIVE_MAX_FRAMES_PER_MESSAGE = int(live_config["max_frames_per_message"])
+        if "preview_fps" in live_config:
+            LIVE_PREVIEW_FPS = float(live_config["preview_fps"])
+        if "inactivity_timeout" in live_config:
+            LIVE_INACTIVITY_TIMEOUT = int(live_config["inactivity_timeout"])
+        if "add_timestamp_overlay" in live_config:
+            LIVE_ADD_TIMESTAMP = bool(live_config["add_timestamp_overlay"])
 
         return config
     return {}
@@ -113,6 +151,218 @@ async def webcam_capture_tool(mode: str = "image", duration: float = 3.0) -> str
     return result
 
 
+async def start_live_vision() -> tuple[bool, str]:
+    """Start the live vision capture service.
+
+    Returns:
+        Tuple of (success, message).
+    """
+    capture_service = cl.user_session.get("capture_service")
+
+    if capture_service and capture_service.is_running:
+        return True, "Live Vision is already running"
+
+    # Create new service if needed
+    if not capture_service:
+        capture_service = LiveCaptureService(
+            capture_fps=LIVE_CAPTURE_FPS,
+            buffer_seconds=LIVE_BUFFER_SECONDS,
+            max_buffer_frames=int(LIVE_BUFFER_SECONDS * LIVE_CAPTURE_FPS * 2),
+            add_timestamp_overlay=LIVE_ADD_TIMESTAMP,
+        )
+        capture_service.inactivity_timeout = LIVE_INACTIVITY_TIMEOUT
+        cl.user_session.set("capture_service", capture_service)
+
+    # Start capture
+    if capture_service.start():
+        cl.user_session.set("live_mode", True)
+
+        # Start preview update task
+        preview_task = asyncio.create_task(update_live_preview())
+        cl.user_session.set("preview_task", preview_task)
+
+        return True, "Live Vision started - I can now see your camera continuously"
+    else:
+        error = capture_service.error_message or "Unknown error"
+        return False, f"Failed to start Live Vision: {error}"
+
+
+async def stop_live_vision() -> tuple[bool, str]:
+    """Stop the live vision capture service.
+
+    Returns:
+        Tuple of (success, message).
+    """
+    capture_service = cl.user_session.get("capture_service")
+
+    if not capture_service or not capture_service.is_running:
+        cl.user_session.set("live_mode", False)
+        return True, "Live Vision is not running"
+
+    # Cancel preview task
+    preview_task = cl.user_session.get("preview_task")
+    if preview_task:
+        preview_task.cancel()
+        try:
+            await preview_task
+        except asyncio.CancelledError:
+            pass
+        cl.user_session.set("preview_task", None)
+
+    # Stop capture
+    capture_service.stop()
+    cl.user_session.set("live_mode", False)
+
+    return True, "Live Vision stopped"
+
+
+async def update_live_preview():
+    """Background task to update the live preview in the UI."""
+    preview_interval = 1.0 / LIVE_PREVIEW_FPS
+    temp_dir = Path(tempfile.mkdtemp())
+    preview_path = temp_dir / "live_preview.jpg"
+    preview_msg: Optional[cl.Message] = None
+
+    try:
+        while True:
+            capture_service = cl.user_session.get("capture_service")
+            if not capture_service or not capture_service.is_running:
+                break
+
+            frame = capture_service.get_latest_frame()
+            if frame:
+                # Save frame as JPEG
+                frame.image.save(str(preview_path), "JPEG", quality=80)
+
+                # Create or update preview message
+                if preview_msg is None:
+                    preview_element = cl.Image(
+                        path=str(preview_path),
+                        name="live_preview",
+                        display="inline",
+                        size="medium"
+                    )
+                    preview_msg = cl.Message(
+                        content="**Live Preview** (updating...)",
+                        elements=[preview_element]
+                    )
+                    await preview_msg.send()
+                else:
+                    # Update existing preview by sending new message
+                    # (Chainlit doesn't support true in-place image updates)
+                    try:
+                        await preview_msg.remove()
+                    except Exception:
+                        pass
+
+                    preview_element = cl.Image(
+                        path=str(preview_path),
+                        name="live_preview",
+                        display="inline",
+                        size="medium"
+                    )
+                    preview_msg = cl.Message(
+                        content="**Live Preview** (updating...)",
+                        elements=[preview_element]
+                    )
+                    await preview_msg.send()
+
+            await asyncio.sleep(preview_interval)
+
+    except asyncio.CancelledError:
+        # Clean up preview message on cancel
+        if preview_msg:
+            try:
+                await preview_msg.remove()
+            except Exception:
+                pass
+        raise
+
+
+async def take_snapshot() -> tuple[bool, str, Optional[str]]:
+    """Take a snapshot from the live feed and save it.
+
+    Returns:
+        Tuple of (success, message, file_path or None).
+    """
+    capture_service = cl.user_session.get("capture_service")
+
+    if not capture_service or not capture_service.is_running:
+        return False, "Live Vision is not running. Start it first with /live on", None
+
+    result = capture_service.take_snapshot()
+    if result:
+        image, timestamp = result
+        # Save to temp file
+        temp_dir = Path(tempfile.mkdtemp())
+        snapshot_path = temp_dir / f"snapshot_{timestamp.replace(':', '-')}.jpg"
+        image.save(str(snapshot_path), "JPEG", quality=95)
+        return True, f"Snapshot taken at {timestamp}", str(snapshot_path)
+    else:
+        return False, "No frame available", None
+
+
+async def handle_live_command(args: str) -> None:
+    """Handle /live command variants.
+
+    Args:
+        args: Command arguments (on, off, status, snapshot).
+    """
+    args = args.strip().lower()
+
+    if args == "on" or args == "start":
+        success, message = await start_live_vision()
+        if success:
+            await cl.Message(content=f"**Live Vision ON** - {message}").send()
+        else:
+            await cl.Message(content=f"**Error:** {message}").send()
+
+    elif args == "off" or args == "stop":
+        success, message = await stop_live_vision()
+        await cl.Message(content=f"**Live Vision OFF** - {message}").send()
+
+    elif args == "snapshot" or args == "snap":
+        success, message, path = await take_snapshot()
+        if success and path:
+            img_element = cl.Image(path=path, name="snapshot", display="inline")
+            await cl.Message(content=f"**Snapshot:** {message}", elements=[img_element]).send()
+        else:
+            await cl.Message(content=f"**Snapshot Error:** {message}").send()
+
+    elif args == "" or args == "status":
+        live_mode = cl.user_session.get("live_mode", False)
+        capture_service = cl.user_session.get("capture_service")
+
+        if live_mode and capture_service and capture_service.is_running:
+            frame_count = capture_service.frame_count
+            status = f"""**Live Vision Status: ON**
+- Frames in buffer: {frame_count}
+- Capture FPS: {LIVE_CAPTURE_FPS}
+- Buffer duration: {LIVE_BUFFER_SECONDS}s
+- Max frames per message: {LIVE_MAX_FRAMES_PER_MESSAGE}
+
+Commands:
+- `/live off` - Stop live vision
+- `/live snapshot` - Take a snapshot"""
+        else:
+            status = """**Live Vision Status: OFF**
+
+Commands:
+- `/live on` - Start live vision (camera streams continuously)
+- When ON, I'll see your camera with every message"""
+
+        await cl.Message(content=status).send()
+
+    else:
+        await cl.Message(content=f"""**Unknown command:** /live {args}
+
+Available commands:
+- `/live on` - Start live vision
+- `/live off` - Stop live vision
+- `/live status` - Show current status
+- `/live snapshot` - Take a snapshot from live feed""").send()
+
+
 @cl.set_starters
 async def set_starters() -> List[cl.Starter]:
     """Set starter prompts for the chat interface.
@@ -121,6 +371,10 @@ async def set_starters() -> List[cl.Starter]:
         List of starter prompts.
     """
     return [
+        cl.Starter(
+            label="Live Vision",
+            message="/live on",
+        ),
         cl.Starter(
             label="Webcam Capture",
             message="Take a picture with the webcam and tell me what you see.",
@@ -132,10 +386,6 @@ async def set_starters() -> List[cl.Starter]:
         cl.Starter(
             label="Video Capture",
             message="Record a short video from the webcam and describe what happens.",
-        ),
-        cl.Starter(
-            label="General Chat",
-            message="Hello! What can you help me with today?",
         ),
     ]
 
@@ -162,6 +412,10 @@ You can:
 When users ask you to "look", "see", "capture", or use the webcam, use the webcam_capture_tool.
 After capturing, analyze the image and describe what you see.
 
+IMPORTANT: When Live Vision mode is active, you can see the user's camera continuously.
+Recent frames will be included with each message. Describe what you see naturally without
+needing to use any tools - you already have the visual context.
+
 Be helpful, accurate, and descriptive in your visual analysis.""",
         model_client_stream=True,
         reflect_on_tool_use=False,  # Disabled: we handle image analysis explicitly after tool execution
@@ -170,13 +424,22 @@ Be helpful, accurate, and descriptive in your visual analysis.""",
     # Store agent in session
     cl.user_session.set("agent", assistant)
 
+    # Initialize live vision state
+    cl.user_session.set("live_mode", False)
+    cl.user_session.set("capture_service", None)
+    cl.user_session.set("preview_task", None)
+
     # Send welcome message
     await cl.Message(
         content="Hello! I'm a multimodal AI assistant. I can:\n"
                 "- Analyze images you upload\n"
                 "- Capture images/videos from your webcam\n"
                 "- Answer questions about visual content\n\n"
-                "Try uploading an image or ask me to use the webcam!"
+                "**New: Live Vision Mode**\n"
+                "- `/live on` - Start continuous camera streaming\n"
+                "- `/live off` - Stop streaming\n"
+                "- `/live snapshot` - Take a snapshot\n\n"
+                "Try uploading an image or type `/live on` to start!"
     ).send()
 
 
@@ -187,53 +450,73 @@ async def on_message(message: cl.Message) -> None:
     Args:
         message: The incoming Chainlit message.
     """
+    # Check for /live command
+    content = message.content.strip()
+    if content.startswith("/live"):
+        args = content[5:].strip()  # Remove "/live" prefix
+        await handle_live_command(args)
+        return
+
     agent = cast(AssistantAgent, cl.user_session.get("agent"))
 
     if agent is None:
         await cl.Message(content="Error: Agent not initialized. Please refresh.").send()
         return
 
-    # Check for image attachments
+    # Check for image/video attachments
     images = [el for el in message.elements if el.mime and "image" in el.mime]
     videos = [el for el in message.elements if el.mime and "video" in el.mime]
 
+    # Check if live mode is active
+    live_mode = cl.user_session.get("live_mode", False)
+    capture_service = cl.user_session.get("capture_service")
+
     # Build the message for the agent
-    if images or videos:
-        content = []
+    content_parts = []
 
-        # Add text content if present
-        if message.content:
-            content.append(message.content)
+    # Add live vision frames if active
+    if live_mode and capture_service and capture_service.is_running:
+        recent_frames = capture_service.get_recent_frames(
+            seconds=LIVE_BUFFER_SECONDS,
+            max_count=LIVE_MAX_FRAMES_PER_MESSAGE
+        )
+        if recent_frames:
+            content_parts.append(f"[Live Vision: {len(recent_frames)} recent frames from camera]")
+            for frame in recent_frames:
+                content_parts.append(AGImage(frame.image))
 
-        # Add images
-        for img in images:
-            try:
-                ag_image = AGImage.from_file(Path(img.path))
-                content.append(ag_image)
-            except Exception as e:
-                await cl.Message(content=f"Error loading image {img.name}: {e}").send()
+    # Add uploaded images
+    for img in images:
+        try:
+            ag_image = AGImage.from_file(Path(img.path))
+            content_parts.append(ag_image)
+        except Exception as e:
+            await cl.Message(content=f"Error loading image {img.name}: {e}").send()
 
-        # Handle videos - extract frames for analysis
-        for vid in videos:
-            try:
-                frames = extract_video_frames(vid.path, VIDEO_FRAMES_PER_SECOND, VIDEO_MAX_FRAMES)
-                if frames:
-                    content.append(f"[Video: {vid.name} - {len(frames)} frames extracted]")
-                    for i, frame in enumerate(frames):
-                        content.append(AGImage(frame))
-                else:
-                    content.append(f"[Video: {vid.name} - could not extract frames]")
-            except Exception as e:
-                await cl.Message(content=f"Error processing video {vid.name}: {e}").send()
+    # Handle uploaded videos - extract frames for analysis
+    for vid in videos:
+        try:
+            frames = extract_video_frames(vid.path, VIDEO_FRAMES_PER_SECOND, VIDEO_MAX_FRAMES)
+            if frames:
+                content_parts.append(f"[Video: {vid.name} - {len(frames)} frames extracted]")
+                for frame in frames:
+                    content_parts.append(AGImage(frame))
+            else:
+                content_parts.append(f"[Video: {vid.name} - could not extract frames]")
+        except Exception as e:
+            await cl.Message(content=f"Error processing video {vid.name}: {e}").send()
 
-        # Create multimodal message
-        if len(content) > 0:
-            agent_message = MultiModalMessage(content=content, source="user")
-        else:
-            agent_message = TextMessage(content=message.content or "Analyze this", source="user")
+    # Add text content
+    if message.content:
+        content_parts.append(message.content)
+
+    # Create the agent message
+    if len(content_parts) > 1 or any(isinstance(p, AGImage) for p in content_parts):
+        # Multimodal message with images/frames
+        agent_message = MultiModalMessage(content=content_parts, source="user")
     else:
         # Text-only message
-        agent_message = TextMessage(content=message.content, source="user")
+        agent_message = TextMessage(content=message.content or "Hello", source="user")
 
     # Create response message for streaming
     response_msg = cl.Message(content="")
@@ -277,7 +560,7 @@ async def on_message(message: cl.Message) -> None:
                                     display="inline"
                                 )
                                 await cl.Message(
-                                    content="📷 Captured from webcam:",
+                                    content="Captured from webcam:",
                                     elements=[img_element]
                                 ).send()
                                 # Store for follow-up analysis
@@ -297,8 +580,8 @@ async def on_message(message: cl.Message) -> None:
                     if final_content:
                         await cl.Message(content=final_content).send()
 
-        # If media was captured, send to model for analysis
-        if captured_images:
+        # If media was captured via tool (not live mode), send to model for analysis
+        if captured_images and not live_mode:
             # Build multimodal message with captured media
             analysis_content = []
             has_video = False
@@ -344,6 +627,13 @@ async def on_message(message: cl.Message) -> None:
         await cl.Message(content=f"Error: {e}").send()
         import traceback
         traceback.print_exc()
+
+
+@cl.on_chat_end
+async def on_chat_end():
+    """Clean up when chat session ends."""
+    # Stop live vision if running
+    await stop_live_vision()
 
 
 @cl.on_stop

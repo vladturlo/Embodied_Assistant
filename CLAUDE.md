@@ -179,7 +179,8 @@ multimodal_agent/
 ├── model_config.yaml      # Ollama model settings
 ├── tools/
 │   ├── __init__.py
-│   └── webcam.py          # Webcam capture tool (supports RTSP, cross-platform ffmpeg)
+│   ├── webcam.py          # Webcam capture tool (supports RTSP, cross-platform ffmpeg)
+│   └── live_capture.py    # Live Vision continuous capture service
 ├── scripts/               # Utility scripts
 │   ├── test_rtsp_connection.py   # Test RTSP from WSL2
 │   ├── start_webcam_stream.ps1   # Windows RTSP streaming script
@@ -192,7 +193,8 @@ multimodal_agent/
 │   ├── test_video_frames.py
 │   ├── test_multimodal_message.py
 │   ├── test_chainlit_elements.py
-│   └── test_agent_tools.py
+│   ├── test_agent_tools.py
+│   └── test_live_capture.py
 ├── test_assets/           # Test images/videos
 └── app.py                 # Main application
 ```
@@ -224,6 +226,9 @@ chainlit run tests/test_chainlit_elements.py
 
 # 7. Test agent tools
 python tests/test_agent_tools.py
+
+# 8. Test live capture service (Windows only - requires webcam)
+python tests/test_live_capture.py
 ```
 
 ## Model Configuration
@@ -238,6 +243,40 @@ The agent can capture images and short videos from the webcam:
 - **Image mode**: Single frame capture
 - **Video mode**: Short clip (up to 10 seconds)
 - Captured media is displayed in chat for both user and agent to see
+
+## Live Vision Mode
+Continuous camera streaming so the model can see without explicit tool calls.
+
+### Commands
+- `/live on` - Start live vision mode (camera streams continuously)
+- `/live off` - Stop live vision mode
+- `/live status` - Show current status and settings
+- `/live snapshot` - Take a snapshot from the live feed
+
+### How It Works
+1. When enabled, background service captures frames at 2 FPS
+2. Frames are stored in a circular buffer (last 5 seconds)
+3. When user sends any message, recent frames are automatically included
+4. Model can describe what it sees without using webcam_capture_tool
+5. Live preview updates in the UI showing current camera view
+
+### Configuration (model_config.yaml)
+```yaml
+live_vision:
+  enabled: false              # Default state when app starts
+  capture_fps: 2.0            # Frames per second to capture
+  buffer_seconds: 5.0         # Keep last N seconds of frames
+  max_frames_per_message: 10  # Max frames to inject per user message
+  preview_fps: 2.0            # UI preview refresh rate
+  inactivity_timeout: 300     # Auto-stop after 5 min of no messages
+  add_timestamp_overlay: true # Add timestamp text on frames
+```
+
+### Features
+- **Timestamp overlay**: Each frame shows capture time (HH:MM:SS.mmm)
+- **Auto-stop**: Automatically stops after 5 minutes of inactivity
+- **Snapshot**: Capture current frame to save/analyze separately
+- **Live preview**: UI shows what the camera currently sees
 
 ### WSL2 Webcam Support (RTSP Streaming)
 WSL2 cannot access Windows webcam directly. Use RTSP streaming instead:
