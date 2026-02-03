@@ -33,8 +33,11 @@ from autogen_core.models import ModelInfo
 from autogen_ext.models.ollama import OllamaChatCompletionClient
 
 import asyncio
+import io
 import tempfile
 import time
+
+from PIL import Image as PILImage
 
 from tools.webcam import capture_webcam, capture_frame_bytes, extract_video_frames
 from tools.mouse import move_mouse, get_mouse_position, get_screen_size
@@ -417,7 +420,9 @@ Analyze this image. What direction should I move the mouse?
 - If stop condition is met: respond with STOP and explain why
 - If stop condition NOT met: call mouse_move_tool with the direction"""
 
-        message_content = [prompt, AGImage(image_bytes)]
+        # Convert bytes to PIL Image for AGImage
+        pil_image = PILImage.open(io.BytesIO(image_bytes))
+        message_content = [prompt, AGImage(pil_image)]
         agent_message = MultiModalMessage(content=message_content, source="user")
 
         # 3. Get model response
