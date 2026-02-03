@@ -44,12 +44,17 @@ from tools.mouse import move_mouse, get_mouse_position, get_screen_size
 
 # Configuration
 OLLAMA_HOST = "http://localhost:11435"
-MODEL_NAME = "qwen3-vl:235b"
+MODEL_NAME = "qwen3-vl:32b"
 CONTEXT_SIZE = 262144  # 256K context
 
 # Video processing defaults (can be overridden in model_config.yaml)
 VIDEO_FRAMES_PER_SECOND = 5.0
 VIDEO_MAX_FRAMES = 50
+
+# Image capture defaults for embodied control (can be overridden in model_config.yaml)
+IMAGE_MAX_WIDTH = 640
+IMAGE_MAX_HEIGHT = 480
+IMAGE_JPEG_QUALITY = 70
 
 # Embodied control settings
 EMBODIED_MAX_ITERATIONS = 50  # Safety limit
@@ -60,12 +65,13 @@ STOP_INDICATORS = ["stop", "stopped", "stopping", "fist", "closed fist", "abort"
 def load_model_config() -> dict:
     """Load model configuration from YAML file.
 
-    Also sets global video processing settings if defined.
+    Also sets global video and image processing settings if defined.
 
     Returns:
         Configuration dictionary.
     """
     global VIDEO_FRAMES_PER_SECOND, VIDEO_MAX_FRAMES
+    global IMAGE_MAX_WIDTH, IMAGE_MAX_HEIGHT, IMAGE_JPEG_QUALITY
 
     config_path = Path(__file__).parent / "model_config.yaml"
     if config_path.exists():
@@ -78,6 +84,15 @@ def load_model_config() -> dict:
             VIDEO_FRAMES_PER_SECOND = float(video_config["frames_per_second"])
         if "max_frames" in video_config:
             VIDEO_MAX_FRAMES = int(video_config["max_frames"])
+
+        # Load image settings if present
+        image_config = config.get("image", {})
+        if "max_width" in image_config:
+            IMAGE_MAX_WIDTH = int(image_config["max_width"])
+        if "max_height" in image_config:
+            IMAGE_MAX_HEIGHT = int(image_config["max_height"])
+        if "jpeg_quality" in image_config:
+            IMAGE_JPEG_QUALITY = int(image_config["jpeg_quality"])
 
         return config
     return {}
@@ -395,7 +410,11 @@ async def run_embodied_loop(agent: AssistantAgent, instruction: str) -> int:
             return iteration
 
         # 1. APP captures image directly (not via tool)
-        image_bytes = capture_frame_bytes()
+        image_bytes = capture_frame_bytes(
+            max_width=IMAGE_MAX_WIDTH,
+            max_height=IMAGE_MAX_HEIGHT,
+            jpeg_quality=IMAGE_JPEG_QUALITY
+        )
         if image_bytes is None:
             await cl.Message(content="**Failed to capture image from webcam.**").send()
             return iteration

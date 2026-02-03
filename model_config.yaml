@@ -1,16 +1,13 @@
-# Ollama Model Configuration for qwen3-vl:2b
+# Ollama Model Configuration
 # Used by the multimodal agent for vision and text processing
 #
-# For local Ollama (default):
-#   - Model: qwen3-vl:2b (fits on 4GB VRAM)
-#   - Host: localhost:11434
-#
-# For remote Ollama (SSH tunnel):
-#   - Model: qwen3-vl:238b
-#   - Host: localhost:11435
+# Available models:
+#   - qwen3-vl:2b   (local, fits on 4GB VRAM)
+#   - qwen3-vl:32b  (remote, balanced speed/quality)
+#   - qwen3-vl:235b (remote, highest quality, slow)
 
 provider: ollama
-model: qwen3-vl:235b
+model: qwen3-vl:32b
 host: http://localhost:11435
 
 # Model capabilities
@@ -23,10 +20,7 @@ capabilities:
 # Generation options
 options:
   temperature: 0.7
-  num_ctx: 32768  # 32K context window (suitable for 2B model)
-  # top_p: 0.9
-  # top_k: 40
-  # repeat_penalty: 1.1
+  num_ctx: 8192  # 8K context for faster inference
 
 # Model info for AutoGen
 model_info:
@@ -40,3 +34,10 @@ model_info:
 video:
   frames_per_second: 5.0  # Frames to extract per second of video
   max_frames: 50          # Maximum frames to prevent overload on long videos
+
+# Image capture settings for embodied control
+# Lower resolution = faster model inference
+image:
+  max_width: 640      # Maximum image width
+  max_height: 480     # Maximum image height
+  jpeg_quality: 70    # JPEG compression quality (0-100)

@@ -303,11 +303,20 @@ def test_webcam_availability() -> bool:
 
 
 # Synchronous versions for testing without async
-def capture_frame_bytes() -> Optional[bytes]:
-    """Capture a single frame and return as JPEG bytes.
+def capture_frame_bytes(
+    max_width: int = 640,
+    max_height: int = 480,
+    jpeg_quality: int = 70
+) -> Optional[bytes]:
+    """Capture a single frame, resize if needed, and return as JPEG bytes.
 
     This is used by the embodied control loop to get image data
     that can be sent directly to the model as AGImage.
+
+    Args:
+        max_width: Maximum image width (default 640 for faster inference).
+        max_height: Maximum image height (default 480 for faster inference).
+        jpeg_quality: JPEG compression quality 0-100 (default 70).
 
     Returns:
         JPEG image bytes or None if capture failed.
@@ -323,8 +332,15 @@ def capture_frame_bytes() -> Optional[bytes]:
     if not ret:
         return None
 
+    # Downscale for faster model inference
+    h, w = frame.shape[:2]
+    if w > max_width or h > max_height:
+        scale = min(max_width / w, max_height / h)
+        new_w, new_h = int(w * scale), int(h * scale)
+        frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
     # Encode as JPEG
-    _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality])
     return buffer.tobytes()
 
 
