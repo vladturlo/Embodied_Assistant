@@ -41,6 +41,7 @@ from PIL import Image as PILImage
 
 from tools.webcam import capture_webcam, capture_frame_bytes, extract_video_frames
 from tools.mouse import move_mouse, get_mouse_position, get_screen_size
+from tools.profiler import EmbodiedProfiler
 
 # Configuration
 OLLAMA_HOST = "http://localhost:11435"
@@ -340,8 +341,17 @@ async def run_agent_turn(agent: AssistantAgent, agent_message, embodied_mode: bo
     return response_text, captured_image_path, used_mouse, failsafe_triggered
 
 
-async def run_embodied_turn(agent: AssistantAgent, agent_message) -> tuple:
+async def run_embodied_turn(
+    agent: AssistantAgent,
+    agent_message,
+    profiler: Optional[EmbodiedProfiler] = None,
+) -> tuple:
     """Run a single embodied control turn.
+
+    Args:
+        agent: The AutoGen assistant agent.
+        agent_message: The multimodal message to send.
+        profiler: Optional profiler for timing measurements.
 
     Returns:
         tuple: (response_text, used_mouse, failsafe_triggered)
@@ -349,6 +359,7 @@ async def run_embodied_turn(agent: AssistantAgent, agent_message) -> tuple:
     response_text = ""
     used_mouse = False
     failsafe_triggered = False
+    first_token_received = False
 
     response_msg = cl.Message(content="")
 
@@ -358,14 +369,23 @@ async def run_embodied_turn(agent: AssistantAgent, agent_message) -> tuple:
     ):
         if isinstance(event, ModelClientStreamingChunkEvent):
             if event.content:
+                # Track time to first token
+                if not first_token_received:
+                    if profiler:
+                        profiler.mark("inference_ttft")
+                    first_token_received = True
                 await response_msg.stream_token(event.content)
                 response_text += event.content
 
         elif isinstance(event, ToolCallRequestEvent):
+            if profiler:
+                profiler.mark("tool_request")
             for call in event.content:
                 await cl.Message(content=f"🔧 {call.name}").send()
 
         elif isinstance(event, ToolCallExecutionEvent):
+            if profiler:
+                profiler.mark("tool_executed")
             for result in event.content:
                 if result.is_error:
                     await cl.Message(content=f"Tool error: {result.content}").send()
@@ -403,31 +423,56 @@ async def run_embodied_loop(agent: AssistantAgent, instruction: str) -> int:
     """
     await cl.Message(content="**Starting embodied control loop...**").send()
 
+    # Initialize profiler with model and image settings
+    profiler = EmbodiedProfiler(
+        model=MODEL_NAME,
+        image_settings={
+            "max_width": IMAGE_MAX_WIDTH,
+            "max_height": IMAGE_MAX_HEIGHT,
+            "jpeg_quality": IMAGE_JPEG_QUALITY,
+        },
+    )
+
+    iterations_completed = 0
+
     for iteration in range(EMBODIED_MAX_ITERATIONS):
+        profiler.start_iteration(iteration)
+
         # Check if user cancelled
         if not cl.user_session.get("embodied_mode", True):
+            profiler.end_iteration()
             await cl.Message(content="**Cancelled by user.**").send()
-            return iteration
+            break
 
         # 1. APP captures image directly (not via tool)
+        profiler.mark("capture_start")
         image_bytes = capture_frame_bytes(
             max_width=IMAGE_MAX_WIDTH,
             max_height=IMAGE_MAX_HEIGHT,
             jpeg_quality=IMAGE_JPEG_QUALITY
         )
-        if image_bytes is None:
-            await cl.Message(content="**Failed to capture image from webcam.**").send()
-            return iteration
+        profiler.mark("capture_end")
 
-        # Save and display captured image
+        if image_bytes is None:
+            profiler.end_iteration()
+            await cl.Message(content="**Failed to capture image from webcam.**").send()
+            break
+
+        # Save captured image to temp file
+        profiler.mark("file_write_start")
         temp_dir = Path(tempfile.mkdtemp())
         temp_path = temp_dir / f"embodied_{int(time.time())}_{iteration}.jpg"
         temp_path.write_bytes(image_bytes)
+        profiler.mark("file_write_end")
 
+        # Display captured image in UI
+        profiler.mark("ui_display_start")
         img_element = cl.Image(path=str(temp_path), name="frame", display="inline")
-        await cl.Message(content=f"📷 Frame {iteration + 1}:", elements=[img_element]).send()
+        await cl.Message(content=f"Frame {iteration + 1}:", elements=[img_element]).send()
+        profiler.mark("ui_display_end")
 
         # 2. Build message with actual image data
+        profiler.mark("msg_build_start")
         if iteration == 0:
             prompt = f"""{instruction}
 
@@ -443,29 +488,55 @@ Analyze this image. What direction should I move the mouse?
         pil_image = PILImage.open(io.BytesIO(image_bytes))
         message_content = [prompt, AGImage(pil_image)]
         agent_message = MultiModalMessage(content=message_content, source="user")
+        profiler.mark("msg_build_end")
 
         # 3. Get model response
-        response_text, used_mouse, failsafe = await run_embodied_turn(agent, agent_message)
+        profiler.mark("inference_start")
+        response_text, used_mouse, failsafe = await run_embodied_turn(
+            agent, agent_message, profiler
+        )
+        profiler.mark("inference_end")
 
         # 4. Check stop conditions
+        profiler.mark("stop_check_start")
+        should_stop = False
         if failsafe:
             await cl.Message(content="**FAILSAFE triggered - stopping.**").send()
-            return iteration + 1
-
-        if detect_stop_condition(response_text):
+            should_stop = True
+        elif detect_stop_condition(response_text):
             await cl.Message(content=f"**Embodied control stopped** (after {iteration + 1} iterations)").send()
-            return iteration + 1
-
-        if not used_mouse:
+            should_stop = True
+        elif not used_mouse:
             # Model didn't call mouse_move_tool - probably decided to stop
             await cl.Message(content=f"**Stopped** (no mouse movement after {iteration + 1} iterations)").send()
-            return iteration + 1
+            should_stop = True
+        profiler.mark("stop_check_end")
+
+        if should_stop:
+            iterations_completed = iteration + 1
+            profiler.end_iteration()
+            break
 
         # 5. Small delay before next capture
+        profiler.mark("delay_start")
         await asyncio.sleep(0.3)
+        profiler.mark("delay_end")
 
-    await cl.Message(content=f"**Reached max iterations ({EMBODIED_MAX_ITERATIONS})**").send()
-    return EMBODIED_MAX_ITERATIONS
+        profiler.end_iteration()
+        iterations_completed = iteration + 1
+
+    else:
+        # Loop completed without break (max iterations reached)
+        await cl.Message(content=f"**Reached max iterations ({EMBODIED_MAX_ITERATIONS})**").send()
+        iterations_completed = EMBODIED_MAX_ITERATIONS
+
+    # Display timing summary in UI
+    if profiler.iterations:
+        summary_table = profiler.format_ui_table()
+        log_path = profiler.save_to_file()
+        await cl.Message(content=f"{summary_table}\n\nSaved to: `{log_path}`").send()
+
+    return iterations_completed
 
 
 @cl.on_message

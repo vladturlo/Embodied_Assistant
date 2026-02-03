@@ -16,6 +16,11 @@ from .mouse import (
     get_screen_size,
 )
 
+from .profiler import (
+    EmbodiedProfiler,
+    IterationTimings,
+)
+
 __all__ = [
     "capture_webcam",
     "capture_frame_bytes",
@@ -27,4 +32,6 @@ __all__ = [
     "move_mouse",
     "get_mouse_position",
     "get_screen_size",
+    "EmbodiedProfiler",
+    "IterationTimings",
 ]

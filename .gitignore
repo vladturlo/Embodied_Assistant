@@ -51,6 +51,8 @@ test_assets/*.mp4
 
 # Logs
 *.log
+logs/*.json
+!logs/.gitkeep
 
 # Environment variables
 .env
