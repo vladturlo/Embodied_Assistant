@@ -232,16 +232,20 @@ async def _capture_video(cap: cv2.VideoCapture, duration: float) -> str:
 
 def extract_video_frames(
     video_path: str,
-    num_frames: int = 5
+    frames_per_second: float = 5.0,
+    max_frames: int = 50
 ) -> list:
-    """Extract evenly-spaced frames from a video file.
+    """Extract frames from a video file at a specified rate.
 
     This is useful for analyzing video content with vision models that
     process images rather than video directly.
 
     Args:
         video_path: Path to the video file.
-        num_frames: Number of frames to extract. Defaults to 5.
+        frames_per_second: How many frames to extract per second of video.
+            Defaults to 5.0 (e.g., a 5-second video yields 25 frames).
+        max_frames: Maximum number of frames to extract. Prevents excessive
+            frame extraction for long videos. Defaults to 50.
 
     Returns:
         List of PIL Image objects representing the extracted frames.
@@ -252,11 +256,20 @@ def extract_video_frames(
         return []
 
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    if total_frames == 0:
+    video_fps = cap.get(cv2.CAP_PROP_FPS)
+
+    if total_frames == 0 or video_fps <= 0:
         cap.release()
         return []
 
-    # Calculate frame indices
+    # Calculate video duration and number of frames to extract
+    duration = total_frames / video_fps
+    num_frames = int(duration * frames_per_second)
+
+    # Apply limits
+    num_frames = max(1, min(num_frames, max_frames))
+
+    # Calculate frame indices (evenly spaced)
     indices = [int(i * total_frames / num_frames) for i in range(num_frames)]
 
     frames = []

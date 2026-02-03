@@ -35,3 +35,8 @@ model_info:
   json_output: false
   family: unknown
   structured_output: false
+
+# Video processing settings
+video:
+  frames_per_second: 5.0  # Frames to extract per second of video
+  max_frames: 50          # Maximum frames to prevent overload on long videos

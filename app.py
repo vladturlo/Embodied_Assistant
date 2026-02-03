@@ -38,17 +38,34 @@ OLLAMA_HOST = "http://localhost:11435"
 MODEL_NAME = "qwen3-vl:235b"
 CONTEXT_SIZE = 262144  # 256K context
 
+# Video processing defaults (can be overridden in model_config.yaml)
+VIDEO_FRAMES_PER_SECOND = 5.0
+VIDEO_MAX_FRAMES = 50
+
 
 def load_model_config() -> dict:
     """Load model configuration from YAML file.
 
+    Also sets global video processing settings if defined.
+
     Returns:
         Configuration dictionary.
     """
+    global VIDEO_FRAMES_PER_SECOND, VIDEO_MAX_FRAMES
+
     config_path = Path(__file__).parent / "model_config.yaml"
     if config_path.exists():
         with open(config_path, "r") as f:
-            return yaml.safe_load(f)
+            config = yaml.safe_load(f)
+
+        # Load video settings if present
+        video_config = config.get("video", {})
+        if "frames_per_second" in video_config:
+            VIDEO_FRAMES_PER_SECOND = float(video_config["frames_per_second"])
+        if "max_frames" in video_config:
+            VIDEO_MAX_FRAMES = int(video_config["max_frames"])
+
+        return config
     return {}
 
 
@@ -199,7 +216,7 @@ async def on_message(message: cl.Message) -> None:
         # Handle videos - extract frames for analysis
         for vid in videos:
             try:
-                frames = extract_video_frames(vid.path, num_frames=5)
+                frames = extract_video_frames(vid.path, VIDEO_FRAMES_PER_SECOND, VIDEO_MAX_FRAMES)
                 if frames:
                     content.append(f"[Video: {vid.name} - {len(frames)} frames extracted]")
                     for i, frame in enumerate(frames):
@@ -292,7 +309,7 @@ async def on_message(message: cl.Message) -> None:
                 elif media_type == "video":
                     has_video = True
                     # Extract frames from video for vision analysis
-                    frames = extract_video_frames(str(media_path), num_frames=5)
+                    frames = extract_video_frames(str(media_path), VIDEO_FRAMES_PER_SECOND, VIDEO_MAX_FRAMES)
                     if frames:
                         analysis_content.append(f"[Video with {len(frames)} frames]")
                         for frame in frames:
