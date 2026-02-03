@@ -2,12 +2,13 @@
 # Used by the multimodal agent for vision and text processing
 #
 # Available models:
-#   - qwen3-vl:2b   (local, fits on 4GB VRAM)
-#   - qwen3-vl:32b  (remote, balanced speed/quality)
-#   - qwen3-vl:235b (remote, highest quality, slow)
+#   - qwen3-vl:2b     (local, fits on 4GB VRAM)
+#   - qwen3-vl:32b    (remote, balanced speed/quality)
+#   - qwen3-vl:235b   (remote, highest quality, slow)
+#   - ministral-3:14b (remote, fast, check vision support)
 
 provider: ollama
-model: qwen3-vl:32b
+model: ministral-3:14b
 host: http://localhost:11435
 
 # Model capabilities

@@ -44,7 +44,7 @@ from tools.mouse import move_mouse, get_mouse_position, get_screen_size
 
 # Configuration
 OLLAMA_HOST = "http://localhost:11435"
-MODEL_NAME = "qwen3-vl:32b"
+MODEL_NAME = "ministral-3:14b"
 CONTEXT_SIZE = 262144  # 256K context
 
 # Video processing defaults (can be overridden in model_config.yaml)
