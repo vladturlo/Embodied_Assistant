@@ -14,7 +14,7 @@ if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 from pathlib import Path
-from typing import List, cast
+from typing import List, Optional, cast
 
 import chainlit as cl
 import yaml
@@ -97,7 +97,7 @@ def create_model_client() -> OllamaChatCompletionClient:
 
 # Wrapper function for the webcam tool that shows in Chainlit
 @cl.step(type="tool")
-async def webcam_capture_tool(mode: str = "image", duration: float = 3.0) -> str:
+async def webcam_capture_tool(mode: str = "image", duration: Optional[float] = None) -> str:
     """Capture image or video from webcam.
 
     This tool captures media from the webcam and displays it in the chat.
@@ -105,17 +105,19 @@ async def webcam_capture_tool(mode: str = "image", duration: float = 3.0) -> str
 
     Args:
         mode: Either "image" for single frame or "video" for short clip.
-        duration: Duration in seconds for video capture (1-10).
+        duration: Duration in seconds for video capture (1-10). Defaults to 3.0.
 
     Returns:
         Path to the captured file or error message.
     """
+    if duration is None:
+        duration = 3.0
     result = await capture_webcam(mode=mode, duration=duration)
     return result
 
 
 @cl.step(type="tool")
-async def mouse_move_tool(direction: str, distance: int = 50) -> str:
+async def mouse_move_tool(direction: str, distance: Optional[int] = None) -> str:
     """Move the mouse cursor in a direction.
 
     Use this tool to control the mouse based on visual input.
@@ -129,6 +131,8 @@ async def mouse_move_tool(direction: str, distance: int = 50) -> str:
     Returns:
         Result message with new cursor position.
     """
+    if distance is None:
+        distance = 50
     return move_mouse(direction, distance)
 
 
