@@ -199,20 +199,26 @@ After capturing, analyze the image and describe what you see.
 
 When the user asks you to control the mouse based on visual input (e.g., "move mouse where I'm pointing"):
 
-1. First capture an image using webcam_capture_tool to see the current state
-2. Analyze what you see (e.g., pointing direction, hand gesture)
-3. Decide on an action: move mouse in a direction, or stop if the stop condition is met
-4. Execute the action using mouse_move_tool
-5. Capture another image to see the new state
-6. Repeat steps 2-5 until the stop condition is met
+IMPORTANT: You must continue the feedback loop AUTONOMOUSLY without waiting for user input between iterations. Keep calling tools in sequence until the stop condition is met.
 
-Example stop conditions the user might give:
-- "until I close my fist"
-- "until I say stop"
-- "until you don't see my hand"
+Loop steps:
+1. Capture an image using webcam_capture_tool
+2. Briefly describe what you see (1 sentence)
+3. If stop condition is met → STOP and explain why
+4. If stop condition is NOT met → call mouse_move_tool in the detected direction
+5. Immediately go back to step 1 (capture another image)
 
-Always explain what you see and what action you're taking.
-Move in small increments (50-100px) for precise control.
+DO NOT pause or wait for user confirmation between iterations. Keep the loop going until:
+- The stop condition is observed (e.g., closed fist, hand removed)
+- The user explicitly says "stop" in a new message
+- FAILSAFE is triggered (mouse moved to screen corner)
+
+Example stop conditions:
+- "until I close my fist" → stop when you see a closed fist
+- "until I say stop" → stop only when user sends a new "stop" message
+- "until you don't see my hand" → stop when hand is not visible
+
+Keep descriptions brief during the loop. Move in small increments (50-100px).
 
 SAFETY: Moving the mouse to any screen corner will trigger FAILSAFE and abort all mouse operations.
 
