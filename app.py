@@ -39,7 +39,13 @@ import time
 
 from PIL import Image as PILImage
 
-from tools.webcam import capture_webcam, capture_frame_bytes, extract_video_frames
+from tools.webcam import (
+    capture_webcam,
+    capture_frame_bytes,
+    capture_frame_from_cap,
+    extract_video_frames,
+    get_video_capture,
+)
 from tools.mouse import move_mouse, get_mouse_position, get_screen_size
 from tools.profiler import EmbodiedProfiler
 
@@ -435,100 +441,111 @@ async def run_embodied_loop(agent: AssistantAgent, instruction: str) -> int:
 
     iterations_completed = 0
 
-    for iteration in range(EMBODIED_MAX_ITERATIONS):
-        profiler.start_iteration(iteration)
+    # Open capture ONCE before loop (avoids 3+ second RTSP reconnection per frame)
+    cap = get_video_capture()
+    if not cap.isOpened():
+        await cl.Message(content="**Failed to open webcam.**").send()
+        return 0
 
-        # Check if user cancelled
-        if not cl.user_session.get("embodied_mode", True):
-            profiler.end_iteration()
-            await cl.Message(content="**Cancelled by user.**").send()
-            break
+    try:
+        for iteration in range(EMBODIED_MAX_ITERATIONS):
+            profiler.start_iteration(iteration)
 
-        # 1. APP captures image directly (not via tool)
-        profiler.mark("capture_start")
-        image_bytes = capture_frame_bytes(
-            max_width=IMAGE_MAX_WIDTH,
-            max_height=IMAGE_MAX_HEIGHT,
-            jpeg_quality=IMAGE_JPEG_QUALITY
-        )
-        profiler.mark("capture_end")
+            # Check if user cancelled
+            if not cl.user_session.get("embodied_mode", True):
+                profiler.end_iteration()
+                await cl.Message(content="**Cancelled by user.**").send()
+                break
 
-        if image_bytes is None:
-            profiler.end_iteration()
-            await cl.Message(content="**Failed to capture image from webcam.**").send()
-            break
+            # 1. APP captures image from persistent connection (fast)
+            profiler.mark("capture_start")
+            image_bytes = capture_frame_from_cap(
+                cap,
+                max_width=IMAGE_MAX_WIDTH,
+                max_height=IMAGE_MAX_HEIGHT,
+                jpeg_quality=IMAGE_JPEG_QUALITY
+            )
+            profiler.mark("capture_end")
 
-        # Save captured image to temp file
-        profiler.mark("file_write_start")
-        temp_dir = Path(tempfile.mkdtemp())
-        temp_path = temp_dir / f"embodied_{int(time.time())}_{iteration}.jpg"
-        temp_path.write_bytes(image_bytes)
-        profiler.mark("file_write_end")
+            if image_bytes is None:
+                profiler.end_iteration()
+                await cl.Message(content="**Failed to capture image from webcam.**").send()
+                break
 
-        # Display captured image in UI
-        profiler.mark("ui_display_start")
-        img_element = cl.Image(path=str(temp_path), name="frame", display="inline")
-        await cl.Message(content=f"Frame {iteration + 1}:", elements=[img_element]).send()
-        profiler.mark("ui_display_end")
+            # Save captured image to temp file
+            profiler.mark("file_write_start")
+            temp_dir = Path(tempfile.mkdtemp())
+            temp_path = temp_dir / f"embodied_{int(time.time())}_{iteration}.jpg"
+            temp_path.write_bytes(image_bytes)
+            profiler.mark("file_write_end")
 
-        # 2. Build message with actual image data
-        profiler.mark("msg_build_start")
-        if iteration == 0:
-            prompt = f"""{instruction}
+            # Display captured image in UI
+            profiler.mark("ui_display_start")
+            img_element = cl.Image(path=str(temp_path), name="frame", display="inline")
+            await cl.Message(content=f"Frame {iteration + 1}:", elements=[img_element]).send()
+            profiler.mark("ui_display_end")
+
+            # 2. Build message with actual image data
+            profiler.mark("msg_build_start")
+            if iteration == 0:
+                prompt = f"""{instruction}
 
 Analyze this image. What direction should I move the mouse?
 - If stop condition is met: respond with STOP and explain why
 - If stop condition NOT met: call mouse_move_tool with the direction (up/down/left/right)"""
-        else:
-            prompt = """Continue. Analyze this image:
+            else:
+                prompt = """Continue. Analyze this image:
 - If stop condition is met: respond with STOP and explain why
 - If stop condition NOT met: call mouse_move_tool with the direction"""
 
-        # Convert bytes to PIL Image for AGImage
-        pil_image = PILImage.open(io.BytesIO(image_bytes))
-        message_content = [prompt, AGImage(pil_image)]
-        agent_message = MultiModalMessage(content=message_content, source="user")
-        profiler.mark("msg_build_end")
+            # Convert bytes to PIL Image for AGImage
+            pil_image = PILImage.open(io.BytesIO(image_bytes))
+            message_content = [prompt, AGImage(pil_image)]
+            agent_message = MultiModalMessage(content=message_content, source="user")
+            profiler.mark("msg_build_end")
 
-        # 3. Get model response
-        profiler.mark("inference_start")
-        response_text, used_mouse, failsafe = await run_embodied_turn(
-            agent, agent_message, profiler
-        )
-        profiler.mark("inference_end")
+            # 3. Get model response
+            profiler.mark("inference_start")
+            response_text, used_mouse, failsafe = await run_embodied_turn(
+                agent, agent_message, profiler
+            )
+            profiler.mark("inference_end")
 
-        # 4. Check stop conditions
-        profiler.mark("stop_check_start")
-        should_stop = False
-        if failsafe:
-            await cl.Message(content="**FAILSAFE triggered - stopping.**").send()
-            should_stop = True
-        elif detect_stop_condition(response_text):
-            await cl.Message(content=f"**Embodied control stopped** (after {iteration + 1} iterations)").send()
-            should_stop = True
-        elif not used_mouse:
-            # Model didn't call mouse_move_tool - probably decided to stop
-            await cl.Message(content=f"**Stopped** (no mouse movement after {iteration + 1} iterations)").send()
-            should_stop = True
-        profiler.mark("stop_check_end")
+            # 4. Check stop conditions
+            profiler.mark("stop_check_start")
+            should_stop = False
+            if failsafe:
+                await cl.Message(content="**FAILSAFE triggered - stopping.**").send()
+                should_stop = True
+            elif detect_stop_condition(response_text):
+                await cl.Message(content=f"**Embodied control stopped** (after {iteration + 1} iterations)").send()
+                should_stop = True
+            elif not used_mouse:
+                # Model didn't call mouse_move_tool - probably decided to stop
+                await cl.Message(content=f"**Stopped** (no mouse movement after {iteration + 1} iterations)").send()
+                should_stop = True
+            profiler.mark("stop_check_end")
 
-        if should_stop:
-            iterations_completed = iteration + 1
+            if should_stop:
+                iterations_completed = iteration + 1
+                profiler.end_iteration()
+                break
+
+            # 5. Small delay before next capture
+            profiler.mark("delay_start")
+            await asyncio.sleep(0.3)
+            profiler.mark("delay_end")
+
             profiler.end_iteration()
-            break
+            iterations_completed = iteration + 1
 
-        # 5. Small delay before next capture
-        profiler.mark("delay_start")
-        await asyncio.sleep(0.3)
-        profiler.mark("delay_end")
+        else:
+            # Loop completed without break (max iterations reached)
+            await cl.Message(content=f"**Reached max iterations ({EMBODIED_MAX_ITERATIONS})**").send()
+            iterations_completed = EMBODIED_MAX_ITERATIONS
 
-        profiler.end_iteration()
-        iterations_completed = iteration + 1
-
-    else:
-        # Loop completed without break (max iterations reached)
-        await cl.Message(content=f"**Reached max iterations ({EMBODIED_MAX_ITERATIONS})**").send()
-        iterations_completed = EMBODIED_MAX_ITERATIONS
+    finally:
+        cap.release()  # Always release the capture
 
     # Display timing summary in UI
     if profiler.iterations:

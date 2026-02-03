@@ -344,6 +344,42 @@ def capture_frame_bytes(
     return buffer.tobytes()
 
 
+def capture_frame_from_cap(
+    cap: cv2.VideoCapture,
+    max_width: int = 640,
+    max_height: int = 480,
+    jpeg_quality: int = 70
+) -> Optional[bytes]:
+    """Capture frame from an existing VideoCapture (no reconnection overhead).
+
+    This is optimized for the embodied control loop where we want to avoid
+    the 3+ second RTSP connection overhead on every frame.
+
+    Args:
+        cap: Open VideoCapture object (must already be connected).
+        max_width: Maximum image width (default 640 for faster inference).
+        max_height: Maximum image height (default 480 for faster inference).
+        jpeg_quality: JPEG compression quality 0-100 (default 70).
+
+    Returns:
+        JPEG image bytes or None if read failed.
+    """
+    ret, frame = cap.read()
+    if not ret:
+        return None
+
+    # Downscale for faster model inference
+    h, w = frame.shape[:2]
+    if w > max_width or h > max_height:
+        scale = min(max_width / w, max_height / h)
+        new_w, new_h = int(w * scale), int(h * scale)
+        frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+    # Encode as JPEG
+    _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality])
+    return buffer.tobytes()
+
+
 def capture_image_sync() -> str:
     """Synchronous version of image capture for testing.
 

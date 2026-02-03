@@ -3,6 +3,7 @@
 from .webcam import (
     capture_webcam,
     capture_frame_bytes,
+    capture_frame_from_cap,
     extract_video_frames,
     get_video_capture,
     get_capture_source_info,
@@ -24,6 +25,7 @@ from .profiler import (
 __all__ = [
     "capture_webcam",
     "capture_frame_bytes",
+    "capture_frame_from_cap",
     "extract_video_frames",
     "get_video_capture",
     "get_capture_source_info",
