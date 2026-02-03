@@ -303,6 +303,31 @@ def test_webcam_availability() -> bool:
 
 
 # Synchronous versions for testing without async
+def capture_frame_bytes() -> Optional[bytes]:
+    """Capture a single frame and return as JPEG bytes.
+
+    This is used by the embodied control loop to get image data
+    that can be sent directly to the model as AGImage.
+
+    Returns:
+        JPEG image bytes or None if capture failed.
+    """
+    cap = get_video_capture()
+
+    if not cap.isOpened():
+        return None
+
+    ret, frame = cap.read()
+    cap.release()
+
+    if not ret:
+        return None
+
+    # Encode as JPEG
+    _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    return buffer.tobytes()
+
+
 def capture_image_sync() -> str:
     """Synchronous version of image capture for testing.
 

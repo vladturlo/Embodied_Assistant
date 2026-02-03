@@ -2,6 +2,7 @@
 
 from .webcam import (
     capture_webcam,
+    capture_frame_bytes,
     extract_video_frames,
     get_video_capture,
     get_capture_source_info,
@@ -17,6 +18,7 @@ from .mouse import (
 
 __all__ = [
     "capture_webcam",
+    "capture_frame_bytes",
     "extract_video_frames",
     "get_video_capture",
     "get_capture_source_info",

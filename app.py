@@ -32,7 +32,11 @@ from autogen_core import CancellationToken, Image as AGImage
 from autogen_core.models import ModelInfo
 from autogen_ext.models.ollama import OllamaChatCompletionClient
 
-from tools.webcam import capture_webcam, extract_video_frames
+import asyncio
+import tempfile
+import time
+
+from tools.webcam import capture_webcam, capture_frame_bytes, extract_video_frames
 from tools.mouse import move_mouse, get_mouse_position, get_screen_size
 
 # Configuration
@@ -203,30 +207,18 @@ After capturing, analyze the image and describe what you see.
 
 ## Embodied Control Mode
 
-When the user asks you to control the mouse based on visual input (e.g., "move mouse where I'm pointing"):
+When you receive an image with instructions to control the mouse based on visual input:
 
-IMPORTANT: You must continue the feedback loop AUTONOMOUSLY without waiting for user input between iterations. Keep calling tools in sequence until the stop condition is met.
+1. Analyze what you see in the image (pointing direction, hand gesture)
+2. If the STOP CONDITION is met → respond with "STOP" and explain why
+3. If the stop condition is NOT met → call mouse_move_tool with the detected direction
 
-Loop steps:
-1. Capture an image using webcam_capture_tool
-2. Briefly describe what you see (1 sentence)
-3. If stop condition is met → STOP and explain why
-4. If stop condition is NOT met → call mouse_move_tool in the detected direction
-5. Immediately go back to step 1 (capture another image)
+Images will be provided automatically - do NOT call webcam_capture_tool during embodied control.
 
-DO NOT pause or wait for user confirmation between iterations. Keep the loop going until:
-- The stop condition is observed (e.g., closed fist, hand removed)
-- The user explicitly says "stop" in a new message
-- FAILSAFE is triggered (mouse moved to screen corner)
+Keep responses brief during embodied control. Just state what you see and call the tool.
+Example: "Thumb pointing right." Then call mouse_move_tool(direction="right", distance=50)
 
-Example stop conditions:
-- "until I close my fist" → stop when you see a closed fist
-- "until I say stop" → stop only when user sends a new "stop" message
-- "until you don't see my hand" → stop when hand is not visible
-
-Keep descriptions brief during the loop. Move in small increments (50-100px).
-
-SAFETY: Moving the mouse to any screen corner will trigger FAILSAFE and abort all mouse operations.
+SAFETY: Moving the mouse to any screen corner will trigger FAILSAFE and abort.
 
 Be helpful, accurate, and descriptive in your visual analysis.""",
         model_client_stream=True,
@@ -330,6 +322,128 @@ async def run_agent_turn(agent: AssistantAgent, agent_message, embodied_mode: bo
     return response_text, captured_image_path, used_mouse, failsafe_triggered
 
 
+async def run_embodied_turn(agent: AssistantAgent, agent_message) -> tuple:
+    """Run a single embodied control turn.
+
+    Returns:
+        tuple: (response_text, used_mouse, failsafe_triggered)
+    """
+    response_text = ""
+    used_mouse = False
+    failsafe_triggered = False
+
+    response_msg = cl.Message(content="")
+
+    async for event in agent.on_messages_stream(
+        messages=[agent_message],
+        cancellation_token=CancellationToken(),
+    ):
+        if isinstance(event, ModelClientStreamingChunkEvent):
+            if event.content:
+                await response_msg.stream_token(event.content)
+                response_text += event.content
+
+        elif isinstance(event, ToolCallRequestEvent):
+            for call in event.content:
+                await cl.Message(content=f"🔧 {call.name}").send()
+
+        elif isinstance(event, ToolCallExecutionEvent):
+            for result in event.content:
+                if result.is_error:
+                    await cl.Message(content=f"Tool error: {result.content}").send()
+                else:
+                    if "FAILSAFE" in result.content:
+                        failsafe_triggered = True
+                    if "Moved mouse" in result.content:
+                        used_mouse = True
+                        await cl.Message(content=f"🖱️ {result.content}").send()
+
+        elif isinstance(event, Response):
+            if response_msg.content:
+                await response_msg.send()
+            else:
+                final_content = event.chat_message.content
+                if final_content:
+                    response_text = final_content
+                    await cl.Message(content=final_content).send()
+
+    return response_text, used_mouse, failsafe_triggered
+
+
+async def run_embodied_loop(agent: AssistantAgent, instruction: str) -> int:
+    """Run the app-driven embodied control loop.
+
+    The app captures images directly and sends them to the model.
+    The model only needs to analyze and call mouse_move_tool.
+
+    Args:
+        agent: The AutoGen assistant agent.
+        instruction: The user's original instruction with stop condition.
+
+    Returns:
+        Number of iterations completed.
+    """
+    await cl.Message(content="**Starting embodied control loop...**").send()
+
+    for iteration in range(EMBODIED_MAX_ITERATIONS):
+        # Check if user cancelled
+        if not cl.user_session.get("embodied_mode", True):
+            await cl.Message(content="**Cancelled by user.**").send()
+            return iteration
+
+        # 1. APP captures image directly (not via tool)
+        image_bytes = capture_frame_bytes()
+        if image_bytes is None:
+            await cl.Message(content="**Failed to capture image from webcam.**").send()
+            return iteration
+
+        # Save and display captured image
+        temp_dir = Path(tempfile.mkdtemp())
+        temp_path = temp_dir / f"embodied_{int(time.time())}_{iteration}.jpg"
+        temp_path.write_bytes(image_bytes)
+
+        img_element = cl.Image(path=str(temp_path), name="frame", display="inline")
+        await cl.Message(content=f"📷 Frame {iteration + 1}:", elements=[img_element]).send()
+
+        # 2. Build message with actual image data
+        if iteration == 0:
+            prompt = f"""{instruction}
+
+Analyze this image. What direction should I move the mouse?
+- If stop condition is met: respond with STOP and explain why
+- If stop condition NOT met: call mouse_move_tool with the direction (up/down/left/right)"""
+        else:
+            prompt = """Continue. Analyze this image:
+- If stop condition is met: respond with STOP and explain why
+- If stop condition NOT met: call mouse_move_tool with the direction"""
+
+        message_content = [prompt, AGImage(image_bytes)]
+        agent_message = MultiModalMessage(content=message_content, source="user")
+
+        # 3. Get model response
+        response_text, used_mouse, failsafe = await run_embodied_turn(agent, agent_message)
+
+        # 4. Check stop conditions
+        if failsafe:
+            await cl.Message(content="**FAILSAFE triggered - stopping.**").send()
+            return iteration + 1
+
+        if detect_stop_condition(response_text):
+            await cl.Message(content=f"**Embodied control stopped** (after {iteration + 1} iterations)").send()
+            return iteration + 1
+
+        if not used_mouse:
+            # Model didn't call mouse_move_tool - probably decided to stop
+            await cl.Message(content=f"**Stopped** (no mouse movement after {iteration + 1} iterations)").send()
+            return iteration + 1
+
+        # 5. Small delay before next capture
+        await asyncio.sleep(0.3)
+
+    await cl.Message(content=f"**Reached max iterations ({EMBODIED_MAX_ITERATIONS})**").send()
+    return EMBODIED_MAX_ITERATIONS
+
+
 @cl.on_message
 async def on_message(message: cl.Message) -> None:
     """Handle incoming messages from the user."""
@@ -378,63 +492,22 @@ async def on_message(message: cl.Message) -> None:
 
     # Detect embodied control mode
     embodied_mode = detect_embodied_mode(message.content or "")
-    if embodied_mode:
-        cl.user_session.set("embodied_mode", True)
-        cl.user_session.set("embodied_instruction", message.content)
 
     try:
-        # Run first turn
+        if embodied_mode:
+            # Use app-driven embodied loop
+            cl.user_session.set("embodied_mode", True)
+            await run_embodied_loop(agent, message.content)
+            cl.user_session.set("embodied_mode", False)
+            return
+
+        # Normal mode - run agent turn
         response_text, captured_image, used_mouse, failsafe = await run_agent_turn(
-            agent, agent_message, embodied_mode
+            agent, agent_message, embodied_mode=False
         )
 
-        # If in embodied mode, continue the loop
-        if embodied_mode and captured_image and used_mouse and not failsafe:
-            iteration = 1
-
-            while iteration < EMBODIED_MAX_ITERATIONS:
-                # Check if model indicated stop
-                if detect_stop_condition(response_text):
-                    await cl.Message(content=f"**Embodied control stopped** (detected stop condition after {iteration} iterations)").send()
-                    break
-
-                iteration += 1
-
-                # Build continuation message with the captured image
-                continuation_content = [
-                    AGImage.from_file(captured_image),
-                    "Continue: analyze this image and take the next action. Remember the instruction and stop condition."
-                ]
-                continuation_msg = MultiModalMessage(content=continuation_content, source="user")
-
-                # Run next turn
-                response_text, captured_image, used_mouse, failsafe = await run_agent_turn(
-                    agent, continuation_msg, embodied_mode=True
-                )
-
-                # Check stop conditions
-                if failsafe:
-                    await cl.Message(content="**FAILSAFE triggered** - embodied control stopped.").send()
-                    break
-
-                if not captured_image or not used_mouse:
-                    # Model didn't capture or move - might have decided to stop
-                    if detect_stop_condition(response_text):
-                        await cl.Message(content=f"**Embodied control stopped** (after {iteration} iterations)").send()
-                    break
-
-                # Check if user session was manually stopped
-                if not cl.user_session.get("embodied_mode", False):
-                    await cl.Message(content="**Embodied control cancelled by user.**").send()
-                    break
-
-            if iteration >= EMBODIED_MAX_ITERATIONS:
-                await cl.Message(content=f"**Embodied control stopped** (reached max {EMBODIED_MAX_ITERATIONS} iterations)").send()
-
-            cl.user_session.set("embodied_mode", False)
-
-        # If not embodied mode but media was captured, send for analysis
-        elif captured_image and not embodied_mode:
+        # If media was captured, send for analysis
+        if captured_image:
             analysis_content = [
                 "Describe what you see in this image in detail:",
                 AGImage.from_file(captured_image)
