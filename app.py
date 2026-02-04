@@ -29,6 +29,7 @@ from autogen_agentchat.messages import (
     ToolCallExecutionEvent,
 )
 from autogen_core import CancellationToken, Image as AGImage
+from autogen_core.models import ModelInfo
 from autogen_core.model_context import BufferedChatCompletionContext
 from autogen_ext.models.ollama import OllamaChatCompletionClient
 
@@ -129,6 +130,12 @@ def create_model_client() -> OllamaChatCompletionClient:
     return OllamaChatCompletionClient(
         model=config.get("model", MODEL_NAME),
         host=config.get("host", SERVER_BASE_URL),
+        model_info=ModelInfo(
+            vision=True,
+            function_calling=True,
+            json_output=False,
+            family="qwen",
+        ),
         options={
             "temperature": config.get("options", {}).get("temperature", 0.7),
             "num_ctx": config.get("options", {}).get("num_ctx", CONTEXT_SIZE),
