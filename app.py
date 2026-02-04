@@ -30,7 +30,8 @@ from autogen_agentchat.messages import (
 )
 from autogen_core import CancellationToken, Image as AGImage
 from autogen_core.models import ModelInfo
-from autogen_ext.models.ollama import OllamaChatCompletionClient
+from autogen_core.model_context import BufferedChatCompletionContext
+from autogen_ext.models.openai import OpenAIChatCompletionClient
 
 import asyncio
 import io
@@ -50,8 +51,9 @@ from tools.mouse import move_mouse, get_mouse_position, get_screen_size
 from tools.profiler import EmbodiedProfiler
 
 # Configuration
-OLLAMA_HOST = "http://localhost:11435"
-MODEL_NAME = "qwen3-vl:30b-a3b"  # MoE model - only 3B active per token
+# Supports both Ollama and llama.cpp server (OpenAI-compatible)
+SERVER_BASE_URL = "http://localhost:11435/v1"  # llama.cpp OpenAI-compatible endpoint
+MODEL_NAME = "qwen3-vl:30b-a3b"  # Model name (set in model_config.yaml)
 CONTEXT_SIZE = 262144  # 256K context
 
 # Video processing defaults (can be overridden in model_config.yaml)
@@ -67,6 +69,19 @@ IMAGE_JPEG_QUALITY = 70
 EMBODIED_MAX_ITERATIONS = 50  # Safety limit
 EMBODIED_KEYWORDS = ["until", "keep going", "keep taking", "continuously", "feedback loop"]
 STOP_INDICATORS = ["stop", "stopped", "stopping", "fist", "closed fist", "abort", "done", "finished"]
+
+# System prompt for embodied control mode (concise for fast inference)
+EMBODIED_SYSTEM_PROMPT = """You are an embodied AI assistant controlling a mouse cursor based on visual input.
+
+Your job:
+1. Analyze the image to detect hand gesture or pointing direction
+2. If STOP condition is met (e.g., fist closed) → respond with "STOP" and explain why
+3. If stop condition NOT met → call mouse_move_tool with the detected direction
+
+Keep responses brief. Just state what you see and call the tool.
+Example: "Thumb pointing right." Then call mouse_move_tool(direction="right", distance=50)
+
+SAFETY: Moving the mouse to any screen corner will trigger FAILSAFE and abort."""
 
 
 def load_model_config() -> dict:
@@ -105,28 +120,75 @@ def load_model_config() -> dict:
     return {}
 
 
-def create_model_client() -> OllamaChatCompletionClient:
-    """Create and configure the Ollama model client.
+def create_model_client() -> OpenAIChatCompletionClient:
+    """Create and configure the model client (llama.cpp or vLLM via OpenAI API).
+
+    Supports KV cache persistence via id_slot and cache_prompt parameters
+    when using llama.cpp server.
 
     Returns:
-        Configured OllamaChatCompletionClient.
+        Configured OpenAIChatCompletionClient.
     """
     config = load_model_config()
 
-    return OllamaChatCompletionClient(
+    # Get llama.cpp specific settings for KV cache
+    llamacpp_config = config.get("llamacpp", {})
+    extra_body = {}
+    if llamacpp_config:
+        # id_slot: assigns request to specific KV cache slot
+        # cache_prompt: enables KV cache reuse for matching prefixes
+        if "id_slot" in llamacpp_config:
+            extra_body["id_slot"] = llamacpp_config["id_slot"]
+        if "cache_prompt" in llamacpp_config:
+            extra_body["cache_prompt"] = llamacpp_config["cache_prompt"]
+
+    return OpenAIChatCompletionClient(
         model=config.get("model", MODEL_NAME),
-        host=config.get("host", OLLAMA_HOST),
+        base_url=config.get("base_url", SERVER_BASE_URL),
+        api_key=config.get("api_key", "not-needed"),  # llama.cpp doesn't require API key
         model_info=ModelInfo(
             vision=True,
             function_calling=True,
-            json_output=False,
-            family="unknown",
-            structured_output=False
+            json_output=config.get("capabilities", {}).get("json_output", False),
+            family="qwen",
+            structured_output=config.get("capabilities", {}).get("structured_output", False),
         ),
-        options={
-            "temperature": config.get("options", {}).get("temperature", 0.7),
-            "num_ctx": config.get("options", {}).get("num_ctx", CONTEXT_SIZE),
-        }
+        # Pass llama.cpp KV cache parameters in extra_body
+        extra_body=extra_body if extra_body else None,
+        # Temperature via extra_body for OpenAI-compatible endpoints
+        temperature=config.get("options", {}).get("temperature", 0.7),
+    )
+
+
+def create_embodied_agent(model_client) -> AssistantAgent:
+    """Create agent for embodied control with bounded context.
+
+    Uses BufferedChatCompletionContext to keep only the last ~2 frames
+    of context, preventing inference degradation from context growth.
+
+    Args:
+        model_client: The model client to use.
+
+    Returns:
+        AssistantAgent configured for embodied control.
+    """
+    # Buffer size calculation:
+    # Each frame generates ~4 messages:
+    #   1. UserMessage (with image)
+    #   2. AssistantMessage (tool call request)
+    #   3. FunctionExecutionResultMessage
+    #   4. AssistantMessage (final response)
+    # For 2 frames = 8 messages, use buffer_size=10 for safety margin
+    model_context = BufferedChatCompletionContext(buffer_size=10)
+
+    return AssistantAgent(
+        name="embodied_assistant",
+        model_client=model_client,
+        model_context=model_context,  # Bounded context!
+        tools=[mouse_move_tool, mouse_position_tool],
+        system_message=EMBODIED_SYSTEM_PROMPT,
+        model_client_stream=True,
+        reflect_on_tool_use=False,
     )
 
 
@@ -414,14 +476,16 @@ async def run_embodied_turn(
     return response_text, used_mouse, failsafe_triggered
 
 
-async def run_embodied_loop(agent: AssistantAgent, instruction: str) -> int:
+async def run_embodied_loop(instruction: str) -> int:
     """Run the app-driven embodied control loop.
 
     The app captures images directly and sends them to the model.
     The model only needs to analyze and call mouse_move_tool.
 
+    Creates a dedicated embodied agent with BufferedChatCompletionContext
+    to limit history to ~2 frames, preventing inference degradation.
+
     Args:
-        agent: The AutoGen assistant agent.
         instruction: The user's original instruction with stop condition.
 
     Returns:
@@ -438,6 +502,11 @@ async def run_embodied_loop(agent: AssistantAgent, instruction: str) -> int:
             "jpeg_quality": IMAGE_JPEG_QUALITY,
         },
     )
+
+    # Create fresh embodied agent with bounded context
+    # This ensures no history carryover and limits context to ~2 frames
+    model_client = create_model_client()
+    agent = create_embodied_agent(model_client)
 
     iterations_completed = 0
 
@@ -607,9 +676,9 @@ async def on_message(message: cl.Message) -> None:
 
     try:
         if embodied_mode:
-            # Use app-driven embodied loop
+            # Use app-driven embodied loop with dedicated bounded-context agent
             cl.user_session.set("embodied_mode", True)
-            await run_embodied_loop(agent, message.content)
+            await run_embodied_loop(message.content)
             cl.user_session.set("embodied_mode", False)
             return
 
