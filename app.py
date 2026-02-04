@@ -29,9 +29,8 @@ from autogen_agentchat.messages import (
     ToolCallExecutionEvent,
 )
 from autogen_core import CancellationToken, Image as AGImage
-from autogen_core.models import ModelInfo
 from autogen_core.model_context import BufferedChatCompletionContext
-from autogen_ext.models.openai import OpenAIChatCompletionClient
+from autogen_ext.models.ollama import OllamaChatCompletionClient
 
 import asyncio
 import io
@@ -51,8 +50,7 @@ from tools.mouse import move_mouse, get_mouse_position, get_screen_size
 from tools.profiler import EmbodiedProfiler
 
 # Configuration
-# Supports both Ollama and llama.cpp server (OpenAI-compatible)
-SERVER_BASE_URL = "http://localhost:11435/v1"  # llama.cpp OpenAI-compatible endpoint
+SERVER_BASE_URL = "http://localhost:11435"  # Ollama server (via SSH tunnel)
 MODEL_NAME = "qwen3-vl:30b-a3b"  # Model name (set in model_config.yaml)
 CONTEXT_SIZE = 262144  # 256K context
 
@@ -120,43 +118,21 @@ def load_model_config() -> dict:
     return {}
 
 
-def create_model_client() -> OpenAIChatCompletionClient:
-    """Create and configure the model client (llama.cpp or vLLM via OpenAI API).
-
-    Supports KV cache persistence via id_slot and cache_prompt parameters
-    when using llama.cpp server.
+def create_model_client() -> OllamaChatCompletionClient:
+    """Create and configure the Ollama model client.
 
     Returns:
-        Configured OpenAIChatCompletionClient.
+        Configured OllamaChatCompletionClient.
     """
     config = load_model_config()
 
-    # Get llama.cpp specific settings for KV cache
-    llamacpp_config = config.get("llamacpp", {})
-    extra_body = {}
-    if llamacpp_config:
-        # id_slot: assigns request to specific KV cache slot
-        # cache_prompt: enables KV cache reuse for matching prefixes
-        if "id_slot" in llamacpp_config:
-            extra_body["id_slot"] = llamacpp_config["id_slot"]
-        if "cache_prompt" in llamacpp_config:
-            extra_body["cache_prompt"] = llamacpp_config["cache_prompt"]
-
-    return OpenAIChatCompletionClient(
+    return OllamaChatCompletionClient(
         model=config.get("model", MODEL_NAME),
-        base_url=config.get("base_url", SERVER_BASE_URL),
-        api_key=config.get("api_key", "not-needed"),  # llama.cpp doesn't require API key
-        model_info=ModelInfo(
-            vision=True,
-            function_calling=True,
-            json_output=config.get("capabilities", {}).get("json_output", False),
-            family="qwen",
-            structured_output=config.get("capabilities", {}).get("structured_output", False),
-        ),
-        # Pass llama.cpp KV cache parameters in extra_body
-        extra_body=extra_body if extra_body else None,
-        # Temperature via extra_body for OpenAI-compatible endpoints
-        temperature=config.get("options", {}).get("temperature", 0.7),
+        host=config.get("host", SERVER_BASE_URL),
+        options={
+            "temperature": config.get("options", {}).get("temperature", 0.7),
+            "num_ctx": config.get("options", {}).get("num_ctx", CONTEXT_SIZE),
+        },
     )
 
 
