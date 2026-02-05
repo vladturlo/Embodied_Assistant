@@ -540,7 +540,7 @@ async def run_embodied_loop(instruction: str) -> int:
 
 Analyze this image. What direction should I move the mouse?
 - If stop condition is met: respond with STOP and explain why
-- If stop condition NOT met: call mouse_move_tool with the direction (up/down/left/right)"""
+- If stop condition NOT met: call mouse_move_tool with the direction (up/down/left/right/up-left/up-right/down-left/down-right)"""
 
             # Convert bytes to PIL Image for AGImage
             pil_image = PILImage.open(io.BytesIO(image_bytes))

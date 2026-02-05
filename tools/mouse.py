@@ -21,7 +21,7 @@ def move_mouse(direction: str, distance: int = 50) -> str:
     """Move the mouse cursor in a direction.
 
     Args:
-        direction: One of "up", "down", "left", "right"
+        direction: One of "up", "down", "left", "right", "up-left", "up-right", "down-left", "down-right"
         distance: Pixels to move (default 50, max 200)
 
     Returns:
@@ -34,16 +34,24 @@ def move_mouse(direction: str, distance: int = 50) -> str:
     dx, dy = 0, 0
     direction = direction.lower().strip()
 
-    if direction == "up":
-        dy = -distance
-    elif direction == "down":
-        dy = distance
-    elif direction == "left":
-        dx = -distance
-    elif direction == "right":
-        dx = distance
-    else:
-        return f"Error: Invalid direction '{direction}'. Use up/down/left/right."
+    # Diagonal distance: use ~0.7x per axis so total displacement ≈ distance
+    diag = int(distance * 0.707)
+
+    directions = {
+        "up": (0, -distance),
+        "down": (0, distance),
+        "left": (-distance, 0),
+        "right": (distance, 0),
+        "up-left": (-diag, -diag),
+        "up-right": (diag, -diag),
+        "down-left": (-diag, diag),
+        "down-right": (diag, diag),
+    }
+
+    if direction not in directions:
+        return f"Error: Invalid direction '{direction}'. Use up/down/left/right or diagonals (up-left, up-right, down-left, down-right)."
+
+    dx, dy = directions[direction]
 
     try:
         pyautogui.moveRel(dx, dy)
