@@ -52,7 +52,7 @@ from tools.profiler import EmbodiedProfiler
 
 # Configuration
 SERVER_BASE_URL = "http://localhost:11435"  # Ollama server (via SSH tunnel)
-MODEL_NAME = "ministral-3:3b"  # Model name (set in model_config.yaml)
+MODEL_NAME = "ministral-3:8b"  # Model name (set in model_config.yaml)
 CONTEXT_SIZE = 262144  # 256K context
 EMBODIED_CONTEXT_SIZE = 16384  # 16K - sufficient for ~10 buffered messages
 
