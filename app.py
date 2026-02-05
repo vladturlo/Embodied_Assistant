@@ -54,6 +54,7 @@ from tools.profiler import EmbodiedProfiler
 SERVER_BASE_URL = "http://localhost:11435"  # Ollama server (via SSH tunnel)
 MODEL_NAME = "qwen3-vl:30b-a3b"  # Model name (set in model_config.yaml)
 CONTEXT_SIZE = 262144  # 256K context
+EMBODIED_CONTEXT_SIZE = 16384  # 16K - sufficient for ~10 buffered messages
 
 # Video processing defaults (can be overridden in model_config.yaml)
 VIDEO_FRAMES_PER_SECOND = 5.0
@@ -119,13 +120,17 @@ def load_model_config() -> dict:
     return {}
 
 
-def create_model_client() -> OllamaChatCompletionClient:
+def create_model_client(num_ctx: int | None = None) -> OllamaChatCompletionClient:
     """Create and configure the Ollama model client.
+
+    Args:
+        num_ctx: Override context window size. Defaults to model_config or 256K.
 
     Returns:
         Configured OllamaChatCompletionClient.
     """
     config = load_model_config()
+    context_size = num_ctx or config.get("options", {}).get("num_ctx", CONTEXT_SIZE)
 
     return OllamaChatCompletionClient(
         model=config.get("model", MODEL_NAME),
@@ -138,7 +143,7 @@ def create_model_client() -> OllamaChatCompletionClient:
         ),
         options={
             "temperature": config.get("options", {}).get("temperature", 0.7),
-            "num_ctx": config.get("options", {}).get("num_ctx", CONTEXT_SIZE),
+            "num_ctx": context_size,
         },
     )
 
@@ -486,9 +491,9 @@ async def run_embodied_loop(instruction: str) -> int:
         },
     )
 
-    # Create fresh embodied agent with bounded context
-    # This ensures no history carryover and limits context to ~2 frames
-    model_client = create_model_client()
+    # Create fresh embodied agent with bounded context and reduced num_ctx
+    # BufferedChatCompletionContext limits to ~10 messages, so 16K context is sufficient
+    model_client = create_model_client(num_ctx=EMBODIED_CONTEXT_SIZE)
     agent = create_embodied_agent(model_client)
 
     iterations_completed = 0
