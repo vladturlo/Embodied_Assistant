@@ -491,6 +491,9 @@ async def run_embodied_loop(instruction: str) -> int:
         return 0
 
     try:
+        # Single message for frame display — updates in-place (no scroll)
+        frame_msg = await cl.Message(content="Starting embodied loop...", elements=[]).send()
+
         for iteration in range(EMBODIED_MAX_ITERATIONS):
             profiler.start_iteration(iteration)
 
@@ -522,10 +525,12 @@ async def run_embodied_loop(instruction: str) -> int:
             temp_path.write_bytes(image_bytes)
             profiler.mark("file_write_end")
 
-            # Display captured image in UI
+            # Display captured image in UI (update in-place — no scrolling)
             profiler.mark("ui_display_start")
             img_element = cl.Image(path=str(temp_path), name="frame", display="inline")
-            await cl.Message(content=f"Frame {iteration + 1}:", elements=[img_element]).send()
+            frame_msg.elements = [img_element]
+            frame_msg.content = f"Frame {iteration + 1}:"
+            await frame_msg.update()
             profiler.mark("ui_display_end")
 
             # 2. Clear context and build fresh message with instruction + current image
@@ -572,7 +577,7 @@ Analyze this image. What direction should I move the mouse?
 
             # 5. Small delay before next capture
             profiler.mark("delay_start")
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(0.05)
             profiler.mark("delay_end")
 
             profiler.end_iteration()

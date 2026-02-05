@@ -11,7 +11,7 @@ import pyautogui
 
 # Safety settings
 pyautogui.FAILSAFE = True   # Move mouse to screen corner to abort
-pyautogui.PAUSE = 0.1       # Small pause between actions (100ms)
+pyautogui.PAUSE = 0.01      # Minimal pause between actions (10ms)
 
 # Movement limits
 MAX_DISTANCE = 200  # Maximum pixels per move
