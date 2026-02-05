@@ -387,6 +387,7 @@ async def run_embodied_turn(
     agent: AssistantAgent,
     agent_message,
     profiler: Optional[EmbodiedProfiler] = None,
+    status_msg: Optional[cl.Message] = None,
 ) -> tuple:
     """Run a single embodied control turn.
 
@@ -394,6 +395,8 @@ async def run_embodied_turn(
         agent: The AutoGen assistant agent.
         agent_message: The multimodal message to send.
         profiler: Optional profiler for timing measurements.
+        status_msg: Optional persistent message to update in-place (embodied mode).
+            When provided, updates this message instead of creating new ones.
 
     Returns:
         tuple: (response_text, used_mouse, tool_called, failsafe_triggered)
@@ -417,37 +420,57 @@ async def run_embodied_turn(
                     if profiler:
                         profiler.mark("inference_ttft")
                     first_token_received = True
-                await response_msg.stream_token(event.content)
                 response_text += event.content
+                if status_msg is None:
+                    await response_msg.stream_token(event.content)
 
         elif isinstance(event, ToolCallRequestEvent):
             tool_called = True
             if profiler:
                 profiler.mark("tool_request")
             for call in event.content:
-                await cl.Message(content=f"🔧 {call.name}").send()
+                if status_msg is not None:
+                    status_msg.content = f"Calling {call.name}..."
+                    await status_msg.update()
+                else:
+                    await cl.Message(content=f"🔧 {call.name}").send()
 
         elif isinstance(event, ToolCallExecutionEvent):
             if profiler:
                 profiler.mark("tool_executed")
             for result in event.content:
                 if result.is_error:
-                    await cl.Message(content=f"Tool error: {result.content}").send()
+                    if status_msg is not None:
+                        status_msg.content = f"Tool error: {result.content}"
+                        await status_msg.update()
+                    else:
+                        await cl.Message(content=f"Tool error: {result.content}").send()
                 else:
                     if "FAILSAFE" in result.content:
                         failsafe_triggered = True
                     if "Moved mouse" in result.content:
                         used_mouse = True
-                        await cl.Message(content=f"🖱️ {result.content}").send()
+                        if status_msg is not None:
+                            status_msg.content = f"🖱️ {result.content}"
+                            await status_msg.update()
+                        else:
+                            await cl.Message(content=f"🖱️ {result.content}").send()
 
         elif isinstance(event, Response):
-            if response_msg.content:
-                await response_msg.send()
-            else:
+            if status_msg is not None:
                 final_content = event.chat_message.content
-                if final_content:
+                if isinstance(final_content, str) and final_content:
                     response_text = final_content
-                    await cl.Message(content=final_content).send()
+                status_msg.content = response_text or status_msg.content
+                await status_msg.update()
+            else:
+                if response_msg.content:
+                    await response_msg.send()
+                else:
+                    final_content = event.chat_message.content
+                    if final_content:
+                        response_text = final_content
+                        await cl.Message(content=final_content).send()
 
     return response_text, used_mouse, tool_called, failsafe_triggered
 
@@ -493,8 +516,12 @@ async def run_embodied_loop(instruction: str) -> int:
         return 0
 
     try:
-        # Single message for frame display — updates in-place (no scroll)
-        frame_msg = await cl.Message(content="Starting embodied loop...", elements=[]).send()
+        # Sidebar for live frame display (replaces elements properly each call)
+        await cl.ElementSidebar.set_title("Live Camera Feed")
+
+        # Single persistent status message — updates in-place (no scroll)
+        status_msg = cl.Message(content="Starting embodied loop...")
+        await status_msg.send()
 
         for iteration in range(EMBODIED_MAX_ITERATIONS):
             profiler.start_iteration(iteration)
@@ -502,7 +529,8 @@ async def run_embodied_loop(instruction: str) -> int:
             # Check if user cancelled
             if not cl.user_session.get("embodied_mode", True):
                 profiler.end_iteration()
-                await cl.Message(content="**Cancelled by user.**").send()
+                status_msg.content = "**Cancelled by user.**"
+                await status_msg.update()
                 break
 
             # 1. APP captures image from persistent connection (fast)
@@ -517,7 +545,8 @@ async def run_embodied_loop(instruction: str) -> int:
 
             if image_bytes is None:
                 profiler.end_iteration()
-                await cl.Message(content="**Failed to capture image from webcam.**").send()
+                status_msg.content = "**Failed to capture image from webcam.**"
+                await status_msg.update()
                 break
 
             # Save captured image to temp file
@@ -527,12 +556,12 @@ async def run_embodied_loop(instruction: str) -> int:
             temp_path.write_bytes(image_bytes)
             profiler.mark("file_write_end")
 
-            # Display captured image in UI (update in-place — no scrolling)
+            # Display captured image in sidebar (replaces previous frame)
             profiler.mark("ui_display_start")
-            img_element = cl.Image(path=str(temp_path), name="frame", display="inline")
-            frame_msg.elements = [img_element]
-            frame_msg.content = f"Frame {iteration + 1}:"
-            await frame_msg.update()
+            img_element = cl.Image(path=str(temp_path), name=f"frame_{iteration}", display="inline")
+            await cl.ElementSidebar.set_elements([img_element])
+            status_msg.content = f"Iteration {iteration + 1}: Analyzing frame..."
+            await status_msg.update()
             profiler.mark("ui_display_end")
 
             # 2. Clear context and build fresh message with instruction + current image
@@ -550,10 +579,10 @@ Analyze this image. What direction should I move the mouse?
             agent_message = MultiModalMessage(content=message_content, source="user")
             profiler.mark("msg_build_end")
 
-            # 3. Get model response
+            # 3. Get model response (updates status_msg in-place)
             profiler.mark("inference_start")
             response_text, used_mouse, tool_called, failsafe = await run_embodied_turn(
-                agent, agent_message, profiler
+                agent, agent_message, profiler, status_msg=status_msg
             )
             profiler.mark("inference_end")
 
@@ -561,14 +590,17 @@ Analyze this image. What direction should I move the mouse?
             profiler.mark("stop_check_start")
             should_stop = False
             if failsafe:
-                await cl.Message(content="**FAILSAFE triggered - stopping.**").send()
+                status_msg.content = "**FAILSAFE triggered - stopping.**"
+                await status_msg.update()
                 should_stop = True
             elif detect_stop_condition(response_text):
-                await cl.Message(content=f"**Embodied control stopped** (after {iteration + 1} iterations)").send()
+                status_msg.content = f"**Embodied control stopped** (after {iteration + 1} iterations)"
+                await status_msg.update()
                 should_stop = True
             elif not used_mouse and not tool_called:
                 # Model genuinely chose not to call any tool - decided to stop
-                await cl.Message(content=f"**Stopped** (no mouse movement after {iteration + 1} iterations)").send()
+                status_msg.content = f"**Stopped** (no mouse movement after {iteration + 1} iterations)"
+                await status_msg.update()
                 should_stop = True
             profiler.mark("stop_check_end")
 
@@ -587,11 +619,13 @@ Analyze this image. What direction should I move the mouse?
 
         else:
             # Loop completed without break (max iterations reached)
-            await cl.Message(content=f"**Reached max iterations ({EMBODIED_MAX_ITERATIONS})**").send()
+            status_msg.content = f"**Reached max iterations ({EMBODIED_MAX_ITERATIONS})**"
+            await status_msg.update()
             iterations_completed = EMBODIED_MAX_ITERATIONS
 
     finally:
         cap.release()  # Always release the capture
+        await cl.ElementSidebar.set_elements([])  # Close sidebar
 
     # Display timing summary in UI
     if profiler.iterations:
