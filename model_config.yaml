@@ -26,7 +26,7 @@ capabilities:
 
 # Generation options
 options:
-  temperature: 0.7
+  temperature: 0.15  # Low temperature as recommended by Mistral
   num_ctx: 262144  # 256K full context
 
 # llama.cpp specific options for KV cache persistence
@@ -54,3 +54,9 @@ image:
   max_width: 480      # Maximum image width (reduced from 640 for speed)
   max_height: 360     # Maximum image height (reduced from 480 for speed)
   jpeg_quality: 65    # JPEG compression quality (0-100)
+
+# Pipeline settings for embodied control (requires OLLAMA_NUM_PARALLEL=2 on server)
+pipeline:
+  enabled: false        # Set to true after confirming OLLAMA_NUM_PARALLEL=2
+  slots: 2              # Number of concurrent inference slots
+  move_distance: 30     # Pixels per move (smaller = smoother with pipeline)

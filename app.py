@@ -68,6 +68,10 @@ IMAGE_JPEG_QUALITY = 70
 # Embodied control settings
 EMBODIED_MAX_ITERATIONS = 50  # Safety limit
 EMBODIED_NUM_PREDICT = 128  # Max output tokens (embodied responses are brief)
+
+# Pipeline defaults (overridden by model_config.yaml pipeline section)
+PIPELINE_MOVE_DISTANCE = 30
+PIPELINE_INITIAL_STAGGER_S = 0.1  # 100ms stagger between initial slot submissions
 EMBODIED_KEYWORDS = ["until", "keep going", "keep taking", "continuously", "feedback loop"]
 STOP_INDICATORS = ["stop", "stopped", "stopping", "fist", "closed fist", "abort", "done", "finished"]
 
@@ -129,7 +133,7 @@ def create_model_client(
     context_size = num_ctx or config.get("options", {}).get("num_ctx", CONTEXT_SIZE)
 
     options: dict = {
-        "temperature": config.get("options", {}).get("temperature", 0.7),
+        "temperature": config.get("options", {}).get("temperature", 0.15),
         "num_ctx": context_size,
     }
     if num_predict is not None:
@@ -148,7 +152,7 @@ def create_model_client(
     )
 
 
-def create_embodied_agent(model_client) -> AssistantAgent:
+def create_embodied_agent(model_client, move_distance: int = 50) -> AssistantAgent:
     """Create agent for embodied control with bounded context.
 
     Uses BufferedChatCompletionContext to keep only the last ~2 frames
@@ -156,10 +160,28 @@ def create_embodied_agent(model_client) -> AssistantAgent:
 
     Args:
         model_client: The model client to use.
+        move_distance: Default mouse move distance in pixels.
+            Sequential mode uses 50px, pipeline mode uses ~30px.
 
     Returns:
         AssistantAgent configured for embodied control.
     """
+    # Closure-based tool with configurable default distance
+    async def _mouse_move(direction: str, distance: Optional[int] = None) -> str:
+        """Move the mouse cursor in a direction.
+
+        Args:
+            direction: One of "up", "down", "left", "right",
+                "up-left", "up-right", "down-left", "down-right"
+            distance: Pixels to move (max 200)
+
+        Returns:
+            Result message with new cursor position.
+        """
+        if distance is None:
+            distance = move_distance
+        return move_mouse(direction, distance)
+
     # Single-frame context: clear before each iteration, buffer is just a safety net
     # 1 frame = ~4 messages (user, assistant tool call, tool result, assistant response)
     model_context = BufferedChatCompletionContext(buffer_size=5)
@@ -168,7 +190,7 @@ def create_embodied_agent(model_client) -> AssistantAgent:
         name="embodied_assistant",
         model_client=model_client,
         model_context=model_context,  # Bounded context!
-        tools=[mouse_move_tool, mouse_position_tool],
+        tools=[_mouse_move, mouse_position_tool],
         system_message=EMBODIED_SYSTEM_PROMPT,
         model_client_stream=True,
         reflect_on_tool_use=False,
@@ -478,6 +500,51 @@ async def run_embodied_turn(
     return response_text, used_mouse, tool_called, failsafe_triggered
 
 
+async def run_inference_slot(
+    agent: AssistantAgent,
+    message,
+) -> tuple:
+    """Run one inference slot silently (no UI interactions).
+
+    Used by the pipelined embodied loop. The main loop handles all UI
+    updates after each completion to avoid race conditions.
+
+    Args:
+        agent: The AutoGen assistant agent for this slot.
+        message: The multimodal message to send.
+
+    Returns:
+        tuple: (response_text, used_mouse, tool_called, failsafe)
+    """
+    response_text = ""
+    used_mouse = False
+    tool_called = False
+    failsafe = False
+
+    async for event in agent.on_messages_stream(
+        messages=[message],
+        cancellation_token=CancellationToken(),
+    ):
+        if isinstance(event, ModelClientStreamingChunkEvent):
+            if event.content:
+                response_text += event.content
+        elif isinstance(event, ToolCallRequestEvent):
+            tool_called = True
+        elif isinstance(event, ToolCallExecutionEvent):
+            for result in event.content:
+                if not result.is_error:
+                    if "FAILSAFE" in result.content:
+                        failsafe = True
+                    if "Moved mouse" in result.content:
+                        used_mouse = True
+        elif isinstance(event, Response):
+            final = event.chat_message.content
+            if isinstance(final, str) and final:
+                response_text = final
+
+    return response_text, used_mouse, tool_called, failsafe
+
+
 async def run_embodied_loop(instruction: str) -> int:
     """Run the app-driven embodied control loop.
 
@@ -650,6 +717,231 @@ Analyze this image. What direction should I move the mouse?
     return iterations_completed
 
 
+async def run_pipelined_embodied_loop(instruction: str) -> int:
+    """Run pipelined embodied control with multiple concurrent inference slots.
+
+    Keeps N inference requests in flight at all times (staggered). When one
+    completes, its result is processed (mouse move) and a fresh frame is
+    submitted to that slot. Moves arrive ~1.7x more frequently than sequential.
+
+    Requires OLLAMA_NUM_PARALLEL >= slots on the server.
+
+    Args:
+        instruction: The user's original instruction with stop condition.
+
+    Returns:
+        Number of moves completed.
+    """
+    config = load_model_config()
+    pipeline_cfg = config.get("pipeline", {})
+    num_slots = pipeline_cfg.get("slots", 2)
+    move_distance = pipeline_cfg.get("move_distance", PIPELINE_MOVE_DISTANCE)
+
+    await cl.Message(
+        content=f"**Starting pipelined embodied control** ({num_slots} slots, {move_distance}px moves)"
+    ).send()
+
+    # Create separate model_client + agent per slot (avoids _tool_id race)
+    agents = []
+    for i in range(num_slots):
+        client = create_model_client(
+            num_ctx=EMBODIED_CONTEXT_SIZE,
+            num_predict=EMBODIED_NUM_PREDICT,
+        )
+        agent = create_embodied_agent(client, move_distance=move_distance)
+        agents.append(agent)
+
+    # Open webcam once
+    cap = get_video_capture()
+    if not cap.isOpened():
+        await cl.Message(content="**Failed to open webcam.**").send()
+        return 0
+
+    temp_dir = Path(tempfile.mkdtemp())
+    temp_path = temp_dir / "frame.jpg"
+
+    # Build the prompt template
+    prompt = f"""{instruction}
+
+Analyze this image. What direction should I move the mouse?
+- If stop condition is met: respond with STOP and explain why
+- If stop condition NOT met: call _mouse_move with the direction (up/down/left/right/up-left/up-right/down-left/down-right)"""
+
+    total_completed = 0
+    total_submitted = 0
+    should_stop = False
+    pending: set = set()
+    task_meta: dict = {}  # task -> {"agent_idx": int, "frame_bytes": bytes}
+    completion_times: list[float] = []
+    pipeline_start = time.perf_counter()
+
+    try:
+        await cl.ElementSidebar.set_title("Live Camera Feed (Pipeline)")
+        status_msg = cl.Message(content="Starting pipeline...")
+        await status_msg.send()
+
+        # Submit initial tasks with stagger
+        for i in range(min(num_slots, EMBODIED_MAX_ITERATIONS)):
+            frame_bytes = capture_frame_from_cap(
+                cap, IMAGE_MAX_WIDTH, IMAGE_MAX_HEIGHT, IMAGE_JPEG_QUALITY,
+            )
+            if frame_bytes is None:
+                break
+
+            pil_image = PILImage.open(io.BytesIO(frame_bytes))
+            message = MultiModalMessage(
+                content=[prompt, AGImage(pil_image)], source="user",
+            )
+
+            agent = agents[i]
+            await agent.model_context.clear()
+            task = asyncio.create_task(run_inference_slot(agent, message))
+            pending.add(task)
+            task_meta[task] = {"agent_idx": i, "frame_bytes": frame_bytes}
+            total_submitted += 1
+
+            # Stagger initial submissions so requests don't hit GPU simultaneously
+            if i < num_slots - 1:
+                await asyncio.sleep(PIPELINE_INITIAL_STAGGER_S)
+
+        # Main pipeline loop
+        while pending and not should_stop:
+            # Check user cancel
+            if not cl.user_session.get("embodied_mode", True):
+                should_stop = True
+                for t in pending:
+                    t.cancel()
+                status_msg.content = "**Cancelled by user.**"
+                await status_msg.update()
+                break
+
+            done, pending = await asyncio.wait(
+                pending, return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            for task in done:
+                try:
+                    response_text, used_mouse, tool_called, failsafe = task.result()
+                except asyncio.CancelledError:
+                    continue
+                except Exception as e:
+                    # Inference error — log and continue with remaining slots
+                    status_msg.content = f"Slot error: {e}"
+                    await status_msg.update()
+                    continue
+
+                total_completed += 1
+                t_now = time.perf_counter()
+                completion_times.append(t_now)
+
+                # Update UI with the frame used for this inference
+                meta = task_meta.pop(task, {})
+                frame_bytes = meta.get("frame_bytes")
+                if frame_bytes:
+                    temp_path.write_bytes(frame_bytes)
+                    img_element = cl.Image(
+                        path=str(temp_path),
+                        name=f"frame_{total_completed}",
+                        display="inline",
+                    )
+
+                    # Show interval in status
+                    interval_str = ""
+                    if len(completion_times) >= 2:
+                        ivl = (completion_times[-1] - completion_times[-2]) * 1000
+                        interval_str = f" | {ivl:.0f}ms"
+
+                    status_msg.content = (
+                        f"[{total_completed}] {response_text[:60]}{interval_str}"
+                    )
+                    await asyncio.gather(
+                        cl.ElementSidebar.set_elements(
+                            [img_element], key=f"pframe_{total_completed}",
+                        ),
+                        status_msg.update(),
+                    )
+
+                # Check stop conditions
+                if failsafe:
+                    should_stop = True
+                    status_msg.content = "**FAILSAFE triggered — stopping.**"
+                    await status_msg.update()
+                elif detect_stop_condition(response_text):
+                    should_stop = True
+                    status_msg.content = (
+                        f"**Stopped** (after {total_completed} moves)"
+                    )
+                    await status_msg.update()
+                elif not used_mouse and not tool_called:
+                    should_stop = True
+                    status_msg.content = (
+                        f"**Stopped** (no move after {total_completed} iterations)"
+                    )
+                    await status_msg.update()
+
+                if should_stop:
+                    for t in pending:
+                        t.cancel()
+                    break
+
+                # Submit replacement task to the same agent slot
+                if total_submitted < EMBODIED_MAX_ITERATIONS:
+                    agent_idx = meta.get("agent_idx", 0)
+                    agent = agents[agent_idx]
+
+                    frame_bytes = capture_frame_from_cap(
+                        cap, IMAGE_MAX_WIDTH, IMAGE_MAX_HEIGHT, IMAGE_JPEG_QUALITY,
+                    )
+                    if frame_bytes is None:
+                        should_stop = True
+                        break
+
+                    pil_image = PILImage.open(io.BytesIO(frame_bytes))
+                    message = MultiModalMessage(
+                        content=[prompt, AGImage(pil_image)], source="user",
+                    )
+
+                    await agent.model_context.clear()
+                    new_task = asyncio.create_task(
+                        run_inference_slot(agent, message)
+                    )
+                    pending.add(new_task)
+                    task_meta[new_task] = {
+                        "agent_idx": agent_idx,
+                        "frame_bytes": frame_bytes,
+                    }
+                    total_submitted += 1
+
+    finally:
+        cap.release()
+        await cl.ElementSidebar.set_elements([])
+
+    # Display pipeline summary
+    if len(completion_times) >= 2:
+        intervals = [
+            (completion_times[i] - completion_times[i - 1]) * 1000
+            for i in range(1, len(completion_times))
+        ]
+        avg_interval = sum(intervals) / len(intervals)
+        total_time = (completion_times[-1] - pipeline_start) * 1000
+        await cl.Message(
+            content=(
+                f"### Pipeline Summary ({num_slots} slots, {move_distance}px)\n"
+                f"- Moves: {total_completed}\n"
+                f"- Avg interval: {avg_interval:.0f}ms\n"
+                f"- Min/Max: {min(intervals):.0f}ms / {max(intervals):.0f}ms\n"
+                f"- Total: {total_time:.0f}ms\n"
+                f"- Effective freq: {1000 / avg_interval:.1f} moves/s"
+            )
+        ).send()
+    elif total_completed > 0:
+        await cl.Message(
+            content=f"Pipeline completed {total_completed} move(s)."
+        ).send()
+
+    return total_completed
+
+
 @cl.on_message
 async def on_message(message: cl.Message) -> None:
     """Handle incoming messages from the user."""
@@ -703,7 +995,11 @@ async def on_message(message: cl.Message) -> None:
         if embodied_mode:
             # Use app-driven embodied loop with dedicated bounded-context agent
             cl.user_session.set("embodied_mode", True)
-            await run_embodied_loop(message.content)
+            pipeline_cfg = load_model_config().get("pipeline", {})
+            if pipeline_cfg.get("enabled", False):
+                await run_pipelined_embodied_loop(message.content)
+            else:
+                await run_embodied_loop(message.content)
             cl.user_session.set("embodied_mode", False)
             return
 
