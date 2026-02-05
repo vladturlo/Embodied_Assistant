@@ -166,8 +166,7 @@ def create_embodied_agent(model_client) -> AssistantAgent:
     )
 
 
-# Wrapper function for the webcam tool that shows in Chainlit
-@cl.step(type="tool")
+# Wrapper function for the webcam tool
 async def webcam_capture_tool(mode: str = "image", duration: Optional[float] = None) -> str:
     """Capture image or video from webcam.
 
@@ -187,7 +186,6 @@ async def webcam_capture_tool(mode: str = "image", duration: Optional[float] = N
     return result
 
 
-@cl.step(type="tool")
 async def mouse_move_tool(direction: str, distance: Optional[int] = None) -> str:
     """Move the mouse cursor in a direction.
 
@@ -207,7 +205,6 @@ async def mouse_move_tool(direction: str, distance: Optional[int] = None) -> str
     return move_mouse(direction, distance)
 
 
-@cl.step(type="tool")
 async def mouse_position_tool() -> str:
     """Get current mouse cursor position.
 
@@ -559,7 +556,7 @@ async def run_embodied_loop(instruction: str) -> int:
             # Display captured image in sidebar (replaces previous frame)
             profiler.mark("ui_display_start")
             img_element = cl.Image(path=str(temp_path), name=f"frame_{iteration}", display="inline")
-            await cl.ElementSidebar.set_elements([img_element])
+            await cl.ElementSidebar.set_elements([img_element], key=f"frame_{iteration}")
             status_msg.content = f"Iteration {iteration + 1}: Analyzing frame..."
             await status_msg.update()
             profiler.mark("ui_display_end")
