@@ -1,15 +1,21 @@
-# Ollama Model Configuration
-# Used by the multimodal agent for vision and text processing
+# Model Configuration
+# Supports llama.cpp server (OpenAI-compatible) or Ollama
 #
-# Available models:
-#   - qwen3-vl:2b       (local, fits on 4GB VRAM)
-#   - qwen3-vl:30b-a3b  (remote, MoE - only 3B active per token, fast)
-#   - qwen3-vl:32b      (remote, balanced speed/quality)
-#   - qwen3-vl:235b     (remote, highest quality, slow)
+# For llama.cpp server, start with:
+#   llama-server -m model.gguf --mmproj mmproj.gguf -c 262144 -np 1 --host 0.0.0.0 --port 11434 -sps 0.0
+#
+# Available Qwen3-VL GGUF models (https://huggingface.co/Qwen/Qwen3-VL-32B-Instruct-GGUF):
+#   - Qwen3VL-8B-Instruct-Q4_K_M.gguf   (fits on 16GB VRAM)
+#   - Qwen3VL-32B-Instruct-Q4_K_M.gguf  (fits on 48GB VRAM)
 
-provider: ollama
-model: qwen3-vl:30b-a3b
-host: http://localhost:11435
+provider: llamacpp
+
+# Model name (as loaded in llama-server)
+model: ministral-3:3b
+
+# llama.cpp OpenAI-compatible endpoint
+base_url: http://localhost:11435/v1
+api_key: not-needed
 
 # Model capabilities
 capabilities:
@@ -23,12 +29,18 @@ options:
   temperature: 0.7
   num_ctx: 262144  # 256K full context
 
+# llama.cpp specific options for KV cache persistence
+# These are passed via extra_body in the OpenAI request
+llamacpp:
+  id_slot: 0           # Dedicated slot for embodied mode (KV cache affinity)
+  cache_prompt: true   # Enable KV cache reuse for matching prefixes
+
 # Model info for AutoGen
 model_info:
   vision: true
   function_calling: true
   json_output: false
-  family: unknown
+  family: mistral
   structured_output: false
 
 # Video processing settings

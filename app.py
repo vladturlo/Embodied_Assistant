@@ -52,7 +52,7 @@ from tools.profiler import EmbodiedProfiler
 
 # Configuration
 SERVER_BASE_URL = "http://localhost:11435"  # Ollama server (via SSH tunnel)
-MODEL_NAME = "qwen3-vl:30b-a3b"  # Model name (set in model_config.yaml)
+MODEL_NAME = "ministral-3:3b"  # Model name (set in model_config.yaml)
 CONTEXT_SIZE = 262144  # 256K context
 EMBODIED_CONTEXT_SIZE = 16384  # 16K - sufficient for ~10 buffered messages
 
@@ -70,18 +70,9 @@ EMBODIED_MAX_ITERATIONS = 50  # Safety limit
 EMBODIED_KEYWORDS = ["until", "keep going", "keep taking", "continuously", "feedback loop"]
 STOP_INDICATORS = ["stop", "stopped", "stopping", "fist", "closed fist", "abort", "done", "finished"]
 
-# System prompt for embodied control mode (concise for fast inference)
-EMBODIED_SYSTEM_PROMPT = """You are an embodied AI assistant controlling a mouse cursor based on visual input.
-
-Your job:
-1. Analyze the image to detect hand gesture or pointing direction
-2. If STOP condition is met (e.g., fist closed) → respond with "STOP" and explain why
-3. If stop condition NOT met → call mouse_move_tool with the detected direction
-
-Keep responses brief. Just state what you see and call the tool.
-Example: "Thumb pointing right." Then call mouse_move_tool(direction="right", distance=50)
-
-SAFETY: Moving the mouse to any screen corner will trigger FAILSAFE and abort."""
+# System prompt for embodied control mode (minimal to avoid conflicting with user instruction)
+EMBODIED_SYSTEM_PROMPT = """You control a mouse cursor based on visual input. Follow the user's instruction exactly.
+Keep responses brief. State what you see, then act."""
 
 
 def load_model_config() -> dict:
@@ -139,7 +130,7 @@ def create_model_client(num_ctx: int | None = None) -> OllamaChatCompletionClien
             vision=True,
             function_calling=True,
             json_output=False,
-            family="qwen",
+            family=config.get("model_info", {}).get("family", "mistral"),
         ),
         options={
             "temperature": config.get("options", {}).get("temperature", 0.7),
