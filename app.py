@@ -129,7 +129,7 @@ def create_model_client(
     context_size = num_ctx or config.get("options", {}).get("num_ctx", CONTEXT_SIZE)
 
     options: dict = {
-        "temperature": config.get("options", {}).get("temperature", 0.7),
+        "temperature": config.get("options", {}).get("temperature", 0.15),
         "num_ctx": context_size,
     }
     if num_predict is not None:
