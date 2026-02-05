@@ -49,8 +49,8 @@ video:
   max_frames: 50          # Maximum frames to prevent overload on long videos
 
 # Image capture settings for embodied control
-# Lower resolution = faster model inference
+# Lower resolution = faster model inference + fewer visual tokens
 image:
-  max_width: 640      # Maximum image width
-  max_height: 480     # Maximum image height
-  jpeg_quality: 70    # JPEG compression quality (0-100)
+  max_width: 480      # Maximum image width (reduced from 640 for speed)
+  max_height: 360     # Maximum image height (reduced from 480 for speed)
+  jpeg_quality: 65    # JPEG compression quality (0-100)

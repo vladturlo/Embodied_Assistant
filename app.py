@@ -67,6 +67,7 @@ IMAGE_JPEG_QUALITY = 70
 
 # Embodied control settings
 EMBODIED_MAX_ITERATIONS = 50  # Safety limit
+EMBODIED_NUM_PREDICT = 128  # Max output tokens (embodied responses are brief)
 EMBODIED_KEYWORDS = ["until", "keep going", "keep taking", "continuously", "feedback loop"]
 STOP_INDICATORS = ["stop", "stopped", "stopping", "fist", "closed fist", "abort", "done", "finished"]
 
@@ -111,17 +112,28 @@ def load_model_config() -> dict:
     return {}
 
 
-def create_model_client(num_ctx: int | None = None) -> OllamaChatCompletionClient:
+def create_model_client(
+    num_ctx: int | None = None,
+    num_predict: int | None = None,
+) -> OllamaChatCompletionClient:
     """Create and configure the Ollama model client.
 
     Args:
         num_ctx: Override context window size. Defaults to model_config or 256K.
+        num_predict: Override max output tokens. None = unlimited.
 
     Returns:
         Configured OllamaChatCompletionClient.
     """
     config = load_model_config()
     context_size = num_ctx or config.get("options", {}).get("num_ctx", CONTEXT_SIZE)
+
+    options: dict = {
+        "temperature": config.get("options", {}).get("temperature", 0.7),
+        "num_ctx": context_size,
+    }
+    if num_predict is not None:
+        options["num_predict"] = num_predict
 
     return OllamaChatCompletionClient(
         model=config.get("model", MODEL_NAME),
@@ -132,10 +144,7 @@ def create_model_client(num_ctx: int | None = None) -> OllamaChatCompletionClien
             json_output=False,
             family=config.get("model_info", {}).get("family", "mistral"),
         ),
-        options={
-            "temperature": config.get("options", {}).get("temperature", 0.7),
-            "num_ctx": context_size,
-        },
+        options=options,
     )
 
 
@@ -426,10 +435,7 @@ async def run_embodied_turn(
             if profiler:
                 profiler.mark("tool_request")
             for call in event.content:
-                if status_msg is not None:
-                    status_msg.content = f"Calling {call.name}..."
-                    await status_msg.update()
-                else:
+                if status_msg is None:
                     await cl.Message(content=f"🔧 {call.name}").send()
 
         elif isinstance(event, ToolCallExecutionEvent):
@@ -499,9 +505,11 @@ async def run_embodied_loop(instruction: str) -> int:
         },
     )
 
-    # Create fresh embodied agent with bounded context and reduced num_ctx
-    # BufferedChatCompletionContext limits to ~10 messages, so 16K context is sufficient
-    model_client = create_model_client(num_ctx=EMBODIED_CONTEXT_SIZE)
+    # Create fresh embodied agent with bounded context, reduced num_ctx and output limit
+    model_client = create_model_client(
+        num_ctx=EMBODIED_CONTEXT_SIZE,
+        num_predict=EMBODIED_NUM_PREDICT,
+    )
     agent = create_embodied_agent(model_client)
 
     iterations_completed = 0
@@ -512,6 +520,10 @@ async def run_embodied_loop(instruction: str) -> int:
         await cl.Message(content="**Failed to open webcam.**").send()
         return 0
 
+    # Single temp directory for all frames (reuse path each iteration)
+    temp_dir = Path(tempfile.mkdtemp())
+    temp_path = temp_dir / "frame.jpg"
+
     try:
         # Sidebar for live frame display (replaces elements properly each call)
         await cl.ElementSidebar.set_title("Live Camera Feed")
@@ -519,6 +531,14 @@ async def run_embodied_loop(instruction: str) -> int:
         # Single persistent status message — updates in-place (no scroll)
         status_msg = cl.Message(content="Starting embodied loop...")
         await status_msg.send()
+
+        # Prefetch first frame before loop starts
+        next_frame_bytes = capture_frame_from_cap(
+            cap,
+            max_width=IMAGE_MAX_WIDTH,
+            max_height=IMAGE_MAX_HEIGHT,
+            jpeg_quality=IMAGE_JPEG_QUALITY,
+        )
 
         for iteration in range(EMBODIED_MAX_ITERATIONS):
             profiler.start_iteration(iteration)
@@ -530,14 +550,9 @@ async def run_embodied_loop(instruction: str) -> int:
                 await status_msg.update()
                 break
 
-            # 1. APP captures image from persistent connection (fast)
+            # 1. Use prefetched frame (captured during previous iteration's inference)
             profiler.mark("capture_start")
-            image_bytes = capture_frame_from_cap(
-                cap,
-                max_width=IMAGE_MAX_WIDTH,
-                max_height=IMAGE_MAX_HEIGHT,
-                jpeg_quality=IMAGE_JPEG_QUALITY
-            )
+            image_bytes = next_frame_bytes
             profiler.mark("capture_end")
 
             if image_bytes is None:
@@ -546,19 +561,19 @@ async def run_embodied_loop(instruction: str) -> int:
                 await status_msg.update()
                 break
 
-            # Save captured image to temp file
+            # Save captured image to temp file (overwrite previous)
             profiler.mark("file_write_start")
-            temp_dir = Path(tempfile.mkdtemp())
-            temp_path = temp_dir / f"embodied_{int(time.time())}_{iteration}.jpg"
             temp_path.write_bytes(image_bytes)
             profiler.mark("file_write_end")
 
-            # Display captured image in sidebar (replaces previous frame)
+            # Display captured image in sidebar + update status (parallel)
             profiler.mark("ui_display_start")
             img_element = cl.Image(path=str(temp_path), name=f"frame_{iteration}", display="inline")
-            await cl.ElementSidebar.set_elements([img_element], key=f"frame_{iteration}")
             status_msg.content = f"Iteration {iteration + 1}: Analyzing frame..."
-            await status_msg.update()
+            await asyncio.gather(
+                cl.ElementSidebar.set_elements([img_element], key=f"frame_{iteration}"),
+                status_msg.update(),
+            )
             profiler.mark("ui_display_end")
 
             # 2. Clear context and build fresh message with instruction + current image
@@ -576,11 +591,18 @@ Analyze this image. What direction should I move the mouse?
             agent_message = MultiModalMessage(content=message_content, source="user")
             profiler.mark("msg_build_end")
 
-            # 3. Get model response (updates status_msg in-place)
+            # 3. Get model response + prefetch next frame in parallel
             profiler.mark("inference_start")
+            loop = asyncio.get_event_loop()
+            next_frame_task = loop.run_in_executor(
+                None, capture_frame_from_cap, cap,
+                IMAGE_MAX_WIDTH, IMAGE_MAX_HEIGHT, IMAGE_JPEG_QUALITY,
+            )
             response_text, used_mouse, tool_called, failsafe = await run_embodied_turn(
                 agent, agent_message, profiler, status_msg=status_msg
             )
+            # Await prefetched frame (already captured during inference)
+            next_frame_bytes = await next_frame_task
             profiler.mark("inference_end")
 
             # 4. Check stop conditions
@@ -605,11 +627,6 @@ Analyze this image. What direction should I move the mouse?
                 iterations_completed = iteration + 1
                 profiler.end_iteration()
                 break
-
-            # 5. Small delay before next capture
-            profiler.mark("delay_start")
-            await asyncio.sleep(0.05)
-            profiler.mark("delay_end")
 
             profiler.end_iteration()
             iterations_completed = iteration + 1
