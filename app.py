@@ -32,6 +32,7 @@ from autogen_core import CancellationToken, Image as AGImage
 from autogen_core.models import ModelInfo
 from autogen_core.model_context import BufferedChatCompletionContext
 from autogen_ext.models.ollama import OllamaChatCompletionClient
+from autogen_ext.models.openai import OpenAIChatCompletionClient
 
 import asyncio
 import io
@@ -119,37 +120,65 @@ def load_model_config() -> dict:
 def create_model_client(
     num_ctx: int | None = None,
     num_predict: int | None = None,
-) -> OllamaChatCompletionClient:
-    """Create and configure the Ollama model client.
+):
+    """Create and configure the model client.
+
+    Supports multiple providers via model_config.yaml:
+    - ollama: Direct Ollama API (OllamaChatCompletionClient)
+    - litellm/llamacpp/openai-compatible: OpenAI-compatible endpoint
 
     Args:
         num_ctx: Override context window size. Defaults to model_config or 256K.
         num_predict: Override max output tokens. None = unlimited.
 
     Returns:
-        Configured OllamaChatCompletionClient.
+        Configured model client (Ollama or OpenAI-compatible).
     """
     config = load_model_config()
-    context_size = num_ctx or config.get("options", {}).get("num_ctx", CONTEXT_SIZE)
-
-    options: dict = {
-        "temperature": config.get("options", {}).get("temperature", 0.15),
-        "num_ctx": context_size,
-    }
-    if num_predict is not None:
-        options["num_predict"] = num_predict
-
-    return OllamaChatCompletionClient(
-        model=config.get("model", MODEL_NAME),
-        host=config.get("host", SERVER_BASE_URL),
-        model_info=ModelInfo(
-            vision=True,
-            function_calling=True,
-            json_output=False,
-            family=config.get("model_info", {}).get("family", "mistral"),
-        ),
-        options=options,
+    provider = config.get("provider", "ollama")
+    model_info = ModelInfo(
+        vision=True,
+        function_calling=True,
+        json_output=False,
+        family=config.get("model_info", {}).get("family", "mistral"),
+        structured_output=False,
     )
+
+    if provider in ("litellm", "openai-compatible", "llamacpp"):
+        # OpenAI-compatible endpoint (LiteLLM proxy, llama.cpp server, etc.)
+        kwargs = {
+            "model": config.get("model", MODEL_NAME),
+            "base_url": config.get("base_url", f"{SERVER_BASE_URL}/v1"),
+            "api_key": config.get("api_key", "not-needed"),
+            "model_info": model_info,
+            "temperature": config.get("options", {}).get("temperature", 0.15),
+        }
+        if num_predict is not None:
+            kwargs["max_tokens"] = num_predict
+        # Pass num_ctx through extra_body for backends that support it
+        ctx = num_ctx or config.get("options", {}).get("num_ctx", CONTEXT_SIZE)
+        extra = {"num_ctx": ctx}
+        # Include llamacpp-specific options if present
+        llamacpp_cfg = config.get("llamacpp", {})
+        if llamacpp_cfg:
+            extra.update(llamacpp_cfg)
+        kwargs["extra_body"] = extra
+        return OpenAIChatCompletionClient(**kwargs)
+    else:
+        # Ollama native API (default)
+        context_size = num_ctx or config.get("options", {}).get("num_ctx", CONTEXT_SIZE)
+        options: dict = {
+            "temperature": config.get("options", {}).get("temperature", 0.15),
+            "num_ctx": context_size,
+        }
+        if num_predict is not None:
+            options["num_predict"] = num_predict
+        return OllamaChatCompletionClient(
+            model=config.get("model", MODEL_NAME),
+            host=config.get("host", SERVER_BASE_URL),
+            model_info=model_info,
+            options=options,
+        )
 
 
 def create_embodied_agent(model_client, move_distance: int = 50) -> AssistantAgent:

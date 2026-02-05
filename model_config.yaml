@@ -1,20 +1,20 @@
 # Model Configuration
-# Supports llama.cpp server (OpenAI-compatible) or Ollama
+# Supports multiple providers:
+#   - ollama: Direct Ollama API (single instance)
+#   - litellm: LiteLLM proxy (load-balanced multi-GPU)
+#   - llamacpp: llama.cpp OpenAI-compatible server
 #
 # For llama.cpp server, start with:
 #   llama-server -m model.gguf --mmproj mmproj.gguf -c 262144 -np 1 --host 0.0.0.0 --port 11434 -sps 0.0
-#
-# Available Qwen3-VL GGUF models (https://huggingface.co/Qwen/Qwen3-VL-32B-Instruct-GGUF):
-#   - Qwen3VL-8B-Instruct-Q4_K_M.gguf   (fits on 16GB VRAM)
-#   - Qwen3VL-32B-Instruct-Q4_K_M.gguf  (fits on 48GB VRAM)
 
-provider: llamacpp
+provider: litellm
 
-# Model name (as loaded in llama-server)
-model: ministral-3:8b
+# Model name (must match LiteLLM model_name or llama-server model)
+model: ministral-3
 
-# llama.cpp OpenAI-compatible endpoint
-base_url: http://localhost:11435/v1
+# LiteLLM proxy endpoint (load-balanced across 4 GPUs)
+# SSH tunnel: ssh -A -N -L 11400:localhost:11400 <node>
+base_url: http://localhost:11400/v1
 api_key: not-needed
 
 # Model capabilities
@@ -31,9 +31,10 @@ options:
 
 # llama.cpp specific options for KV cache persistence
 # These are passed via extra_body in the OpenAI request
-llamacpp:
-  id_slot: 0           # Dedicated slot for embodied mode (KV cache affinity)
-  cache_prompt: true   # Enable KV cache reuse for matching prefixes
+# (only used when provider: llamacpp)
+# llamacpp:
+#   id_slot: 0           # Dedicated slot for embodied mode (KV cache affinity)
+#   cache_prompt: true   # Enable KV cache reuse for matching prefixes
 
 # Model info for AutoGen
 model_info:
@@ -55,8 +56,9 @@ image:
   max_height: 360     # Maximum image height (reduced from 480 for speed)
   jpeg_quality: 65    # JPEG compression quality (0-100)
 
-# Pipeline settings for embodied control (requires OLLAMA_NUM_PARALLEL=2 on server)
+# Pipeline settings for embodied control
+# 4 GPUs x OLLAMA_NUM_PARALLEL=2 = 8 concurrent slots
 pipeline:
-  enabled: false        # Set to true after confirming OLLAMA_NUM_PARALLEL=2
-  slots: 2              # Number of concurrent inference slots
-  move_distance: 30     # Pixels per move (smaller = smoother with pipeline)
+  enabled: false        # Set to true after confirming multi-GPU setup
+  slots: 8              # 4 GPUs × 2 parallel each
+  move_distance: 15     # Pixels per move (smaller = smoother at ~48ms intervals)
