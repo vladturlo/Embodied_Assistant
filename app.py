@@ -160,14 +160,9 @@ def create_embodied_agent(model_client) -> AssistantAgent:
     Returns:
         AssistantAgent configured for embodied control.
     """
-    # Buffer size calculation:
-    # Each frame generates ~4 messages:
-    #   1. UserMessage (with image)
-    #   2. AssistantMessage (tool call request)
-    #   3. FunctionExecutionResultMessage
-    #   4. AssistantMessage (final response)
-    # For 2 frames = 8 messages, use buffer_size=10 for safety margin
-    model_context = BufferedChatCompletionContext(buffer_size=10)
+    # Single-frame context: clear before each iteration, buffer is just a safety net
+    # 1 frame = ~4 messages (user, assistant tool call, tool result, assistant response)
+    model_context = BufferedChatCompletionContext(buffer_size=5)
 
     return AssistantAgent(
         name="embodied_assistant",
@@ -542,18 +537,14 @@ async def run_embodied_loop(instruction: str) -> int:
             await cl.Message(content=f"Frame {iteration + 1}:", elements=[img_element]).send()
             profiler.mark("ui_display_end")
 
-            # 2. Build message with actual image data
+            # 2. Clear context and build fresh message with instruction + current image
+            await agent.model_context.clear()
             profiler.mark("msg_build_start")
-            if iteration == 0:
-                prompt = f"""{instruction}
+            prompt = f"""{instruction}
 
 Analyze this image. What direction should I move the mouse?
 - If stop condition is met: respond with STOP and explain why
 - If stop condition NOT met: call mouse_move_tool with the direction (up/down/left/right)"""
-            else:
-                prompt = """Continue. Analyze this image:
-- If stop condition is met: respond with STOP and explain why
-- If stop condition NOT met: call mouse_move_tool with the direction"""
 
             # Convert bytes to PIL Image for AGImage
             pil_image = PILImage.open(io.BytesIO(image_bytes))
