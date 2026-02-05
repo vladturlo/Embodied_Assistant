@@ -396,10 +396,11 @@ async def run_embodied_turn(
         profiler: Optional profiler for timing measurements.
 
     Returns:
-        tuple: (response_text, used_mouse, failsafe_triggered)
+        tuple: (response_text, used_mouse, tool_called, failsafe_triggered)
     """
     response_text = ""
     used_mouse = False
+    tool_called = False
     failsafe_triggered = False
     first_token_received = False
 
@@ -420,6 +421,7 @@ async def run_embodied_turn(
                 response_text += event.content
 
         elif isinstance(event, ToolCallRequestEvent):
+            tool_called = True
             if profiler:
                 profiler.mark("tool_request")
             for call in event.content:
@@ -447,7 +449,7 @@ async def run_embodied_turn(
                     response_text = final_content
                     await cl.Message(content=final_content).send()
 
-    return response_text, used_mouse, failsafe_triggered
+    return response_text, used_mouse, tool_called, failsafe_triggered
 
 
 async def run_embodied_loop(instruction: str) -> int:
@@ -550,7 +552,7 @@ Analyze this image. What direction should I move the mouse?
 
             # 3. Get model response
             profiler.mark("inference_start")
-            response_text, used_mouse, failsafe = await run_embodied_turn(
+            response_text, used_mouse, tool_called, failsafe = await run_embodied_turn(
                 agent, agent_message, profiler
             )
             profiler.mark("inference_end")
@@ -564,8 +566,8 @@ Analyze this image. What direction should I move the mouse?
             elif detect_stop_condition(response_text):
                 await cl.Message(content=f"**Embodied control stopped** (after {iteration + 1} iterations)").send()
                 should_stop = True
-            elif not used_mouse:
-                # Model didn't call mouse_move_tool - probably decided to stop
+            elif not used_mouse and not tool_called:
+                # Model genuinely chose not to call any tool - decided to stop
                 await cl.Message(content=f"**Stopped** (no mouse movement after {iteration + 1} iterations)").send()
                 should_stop = True
             profiler.mark("stop_check_end")
