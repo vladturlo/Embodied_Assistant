@@ -324,7 +324,7 @@ def test_webcam_availability() -> bool:
 
 # Synchronous versions for testing without async
 def capture_frame_bytes(
-    max_size: int = 240,
+    max_size: int = 16,
     jpeg_quality: int = 70
 ) -> Optional[bytes]:
     """Capture a single frame, center-crop to square, resize, and return as JPEG bytes.
@@ -366,7 +366,7 @@ def capture_frame_bytes(
 
 def capture_frame_from_cap(
     cap: cv2.VideoCapture,
-    max_size: int = 240,
+    max_size: int = 16,
     jpeg_quality: int = 70
 ) -> Optional[bytes]:
     """Capture frame from an existing VideoCapture (no reconnection overhead).
