@@ -206,8 +206,7 @@ def create_embodied_agent(
         """Move the mouse cursor in a direction.
 
         Args:
-            direction: One of "up", "down", "left", "right",
-                "up-left", "up-right", "down-left", "down-right"
+            direction: One of "up", "down", "left", "right"
             distance: Pixels to move (max 200)
 
         Returns:
@@ -391,11 +390,8 @@ def extract_direction_from_response(response_text: str) -> str | None:
         or None if no direction found (cursor should stop).
     """
     text_lower = response_text.lower()
-    # Check diagonals first (they contain "up"/"down"/"left"/"right" as substrings)
-    directions = [
-        "up-left", "up-right", "down-left", "down-right",
-        "up", "down", "left", "right",
-    ]
+    # Cardinal directions only (simpler classification for model)
+    directions = ["up", "down", "left", "right"]
     for d in directions:
         if d in text_lower:
             return d
@@ -719,7 +715,7 @@ async def run_embodied_loop(instruction: str) -> int:
 
 Analyze this image. What direction should I move the mouse?
 - If stop condition is met: respond with STOP and explain why
-- If stop condition NOT met: call mouse_move_tool with the direction (up/down/left/right/up-left/up-right/down-left/down-right)"""
+- If stop condition NOT met: call mouse_move_tool with the direction (up/down/left/right)"""
 
             # Convert bytes to PIL Image for AGImage
             pil_image = PILImage.open(io.BytesIO(image_bytes))
@@ -841,7 +837,7 @@ async def run_pipelined_embodied_loop(instruction: str) -> int:
 
 Analyze this image. What direction should I move the mouse?
 - If stop condition is met: respond with STOP and explain why
-- If stop condition NOT met: call _mouse_move with the direction (up/down/left/right/up-left/up-right/down-left/down-right)"""
+- If stop condition NOT met: call _mouse_move with the direction (up/down/left/right)"""
 
     total_completed = 0
     total_submitted = 0
