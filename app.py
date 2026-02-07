@@ -181,7 +181,11 @@ def create_model_client(
         )
 
 
-def create_embodied_agent(model_client, move_distance: int = 50) -> AssistantAgent:
+def create_embodied_agent(
+    model_client,
+    move_distance: int = 50,
+    smooth_mode: bool = False,
+) -> AssistantAgent:
     """Create agent for embodied control with bounded context.
 
     Uses BufferedChatCompletionContext to keep only the last ~2 frames
@@ -191,6 +195,8 @@ def create_embodied_agent(model_client, move_distance: int = 50) -> AssistantAge
         model_client: The model client to use.
         move_distance: Default mouse move distance in pixels.
             Sequential mode uses 50px, pipeline mode uses ~30px.
+        smooth_mode: If True, tool returns direction without moving cursor.
+            The smooth controller handles all movement instead.
 
     Returns:
         AssistantAgent configured for embodied control.
@@ -207,6 +213,10 @@ def create_embodied_agent(model_client, move_distance: int = 50) -> AssistantAge
         Returns:
             Result message with new cursor position.
         """
+        if smooth_mode:
+            # In smooth mode, just acknowledge direction - smooth controller handles movement
+            x, y = __import__('pyautogui').position()
+            return f"Direction: {direction}. Position: ({x}, {y})"
         if distance is None:
             distance = move_distance
         return move_mouse(direction, distance)
@@ -565,12 +575,13 @@ async def run_inference_slot(
         message: The multimodal message to send.
 
     Returns:
-        tuple: (response_text, used_mouse, tool_called, failsafe)
+        tuple: (response_text, used_mouse, tool_called, failsafe, direction)
     """
     response_text = ""
     used_mouse = False
     tool_called = False
     failsafe = False
+    direction = None
 
     async for event in agent.on_messages_stream(
         messages=[message],
@@ -588,12 +599,19 @@ async def run_inference_slot(
                         failsafe = True
                     if "Moved mouse" in result.content:
                         used_mouse = True
+                    # Extract direction from smooth mode tool result
+                    if "Direction:" in result.content:
+                        used_mouse = True  # Treat as mouse action
+                        # Parse "Direction: left. Position: ..."
+                        match = re.search(r"Direction:\s*(\S+)", result.content)
+                        if match:
+                            direction = match.group(1).rstrip(".")
         elif isinstance(event, Response):
             final = event.chat_message.content
             if isinstance(final, str) and final:
                 response_text = final
 
-    return response_text, used_mouse, tool_called, failsafe
+    return response_text, used_mouse, tool_called, failsafe, direction
 
 
 async def run_embodied_loop(instruction: str) -> int:
@@ -802,7 +820,11 @@ async def run_pipelined_embodied_loop(instruction: str) -> int:
             num_ctx=EMBODIED_CONTEXT_SIZE,
             num_predict=EMBODIED_NUM_PREDICT,
         )
-        agent = create_embodied_agent(client, move_distance=move_distance)
+        agent = create_embodied_agent(
+            client,
+            move_distance=move_distance,
+            smooth_mode=smooth_movement,
+        )
         agents.append(agent)
 
     # Open webcam once
@@ -884,7 +906,7 @@ Analyze this image. What direction should I move the mouse?
 
             for task in done:
                 try:
-                    response_text, used_mouse, tool_called, failsafe = task.result()
+                    response_text, used_mouse, tool_called, failsafe, direction = task.result()
                 except asyncio.CancelledError:
                     continue
                 except Exception as e:
@@ -897,9 +919,8 @@ Analyze this image. What direction should I move the mouse?
                 t_now = time.perf_counter()
                 completion_times.append(t_now)
 
-                # Update smooth controller with direction from response
+                # Update smooth controller with direction from tool result
                 if smooth_controller:
-                    direction = extract_direction_from_response(response_text)
                     smooth_controller.update_direction(direction)
                     # Check if smooth controller hit failsafe
                     if smooth_controller.failsafe_triggered:
