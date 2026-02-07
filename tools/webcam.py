@@ -332,6 +332,9 @@ def capture_frame_bytes(
     if not ret:
         return None
 
+    # Flip horizontally to correct mirror effect from front-facing webcam
+    frame = cv2.flip(frame, 1)
+
     # Downscale for faster model inference
     h, w = frame.shape[:2]
     if w > max_width or h > max_height:
@@ -367,6 +370,9 @@ def capture_frame_from_cap(
     ret, frame = cap.read()
     if not ret:
         return None
+
+    # Flip horizontally to correct mirror effect from front-facing webcam
+    frame = cv2.flip(frame, 1)
 
     # Downscale for faster model inference
     h, w = frame.shape[:2]
