@@ -63,7 +63,7 @@ VIDEO_MAX_FRAMES = 50
 
 # Image capture defaults for embodied control (can be overridden in model_config.yaml)
 # Square output (center-cropped) for optimal Ministral-3 performance
-IMAGE_SIZE = 16
+IMAGE_SIZE = 64
 IMAGE_JPEG_QUALITY = 70
 
 # Embodied control settings
