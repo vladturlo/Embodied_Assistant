@@ -67,7 +67,7 @@ IMAGE_MAX_HEIGHT = 480
 IMAGE_JPEG_QUALITY = 70
 
 # Embodied control settings
-EMBODIED_MAX_ITERATIONS = 50  # Safety limit
+EMBODIED_MAX_ITERATIONS = 500  # Safety limit
 EMBODIED_NUM_PREDICT = 128  # Max output tokens (embodied responses are brief)
 
 # Pipeline defaults (overridden by model_config.yaml pipeline section)
