@@ -339,6 +339,9 @@ def capture_frame_bytes(
         new_w, new_h = int(w * scale), int(h * scale)
         frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
+    # Flip horizontally to correct mirror effect (selfie-style webcams)
+    frame = cv2.flip(frame, 1)
+
     # Encode as JPEG
     _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality])
     return buffer.tobytes()
@@ -374,6 +377,9 @@ def capture_frame_from_cap(
         scale = min(max_width / w, max_height / h)
         new_w, new_h = int(w * scale), int(h * scale)
         frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+    # Flip horizontally to correct mirror effect (selfie-style webcams)
+    frame = cv2.flip(frame, 1)
 
     # Encode as JPEG
     _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality])

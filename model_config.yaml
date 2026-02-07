@@ -63,4 +63,4 @@ pipeline:
   slots: 8              # 4 GPUs × 2 parallel each
   move_distance: 15     # Pixels per move (only when smooth_movement=false)
   smooth_movement: true # Continuous cursor movement with direction averaging
-  speed_px_per_sec: 20  # Cursor speed in pixels per second (only when smooth_movement=true)
+  speed_px_per_sec: 100 # Cursor speed in pixels per second (only when smooth_movement=true)
