@@ -50,10 +50,10 @@ video:
   max_frames: 50          # Maximum frames to prevent overload on long videos
 
 # Image capture settings for embodied control
+# Square center-cropped output for optimal Ministral-3 performance (1:1 aspect ratio)
 # Lower resolution = faster model inference + fewer visual tokens
 image:
-  max_width: 480      # Maximum image width (reduced from 640 for speed)
-  max_height: 360     # Maximum image height (reduced from 480 for speed)
+  size: 240           # Square output size (center-cropped from webcam)
   jpeg_quality: 65    # JPEG compression quality (0-100)
 
 # Pipeline settings for embodied control

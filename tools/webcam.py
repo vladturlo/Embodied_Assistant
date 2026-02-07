@@ -22,6 +22,26 @@ import cv2
 import numpy as np
 from PIL import Image as PILImage
 
+
+def center_crop_square(frame: np.ndarray) -> np.ndarray:
+    """Center-crop frame to the largest centered square.
+
+    This removes the left/right sides (for landscape) or top/bottom (for portrait)
+    to create a square image, which is optimal for vision models like Ministral-3.
+
+    Args:
+        frame: Input image as numpy array (H, W, C).
+
+    Returns:
+        Square-cropped image as numpy array.
+    """
+    h, w = frame.shape[:2]
+    size = min(h, w)
+    top = (h - size) // 2
+    left = (w - size) // 2
+    return frame[top:top + size, left:left + size]
+
+
 # Optional: Import chainlit for display in chat
 try:
     import chainlit as cl
@@ -304,18 +324,16 @@ def test_webcam_availability() -> bool:
 
 # Synchronous versions for testing without async
 def capture_frame_bytes(
-    max_width: int = 640,
-    max_height: int = 480,
+    max_size: int = 240,
     jpeg_quality: int = 70
 ) -> Optional[bytes]:
-    """Capture a single frame, resize if needed, and return as JPEG bytes.
+    """Capture a single frame, center-crop to square, resize, and return as JPEG bytes.
 
     This is used by the embodied control loop to get image data
     that can be sent directly to the model as AGImage.
 
     Args:
-        max_width: Maximum image width (default 640 for faster inference).
-        max_height: Maximum image height (default 480 for faster inference).
+        max_size: Output image size (square, default 240x240 for optimal Ministral-3).
         jpeg_quality: JPEG compression quality 0-100 (default 70).
 
     Returns:
@@ -332,12 +350,11 @@ def capture_frame_bytes(
     if not ret:
         return None
 
-    # Downscale for faster model inference
-    h, w = frame.shape[:2]
-    if w > max_width or h > max_height:
-        scale = min(max_width / w, max_height / h)
-        new_w, new_h = int(w * scale), int(h * scale)
-        frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    # Center-crop to square (optimal for 1:1 aspect ratio models like Ministral-3)
+    frame = center_crop_square(frame)
+
+    # Resize to target size
+    frame = cv2.resize(frame, (max_size, max_size), interpolation=cv2.INTER_AREA)
 
     # Flip horizontally to correct mirror effect (selfie-style webcams)
     frame = cv2.flip(frame, 1)
@@ -349,8 +366,7 @@ def capture_frame_bytes(
 
 def capture_frame_from_cap(
     cap: cv2.VideoCapture,
-    max_width: int = 640,
-    max_height: int = 480,
+    max_size: int = 240,
     jpeg_quality: int = 70
 ) -> Optional[bytes]:
     """Capture frame from an existing VideoCapture (no reconnection overhead).
@@ -360,8 +376,7 @@ def capture_frame_from_cap(
 
     Args:
         cap: Open VideoCapture object (must already be connected).
-        max_width: Maximum image width (default 640 for faster inference).
-        max_height: Maximum image height (default 480 for faster inference).
+        max_size: Output image size (square, default 240x240 for optimal Ministral-3).
         jpeg_quality: JPEG compression quality 0-100 (default 70).
 
     Returns:
@@ -371,12 +386,11 @@ def capture_frame_from_cap(
     if not ret:
         return None
 
-    # Downscale for faster model inference
-    h, w = frame.shape[:2]
-    if w > max_width or h > max_height:
-        scale = min(max_width / w, max_height / h)
-        new_w, new_h = int(w * scale), int(h * scale)
-        frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    # Center-crop to square (optimal for 1:1 aspect ratio models like Ministral-3)
+    frame = center_crop_square(frame)
+
+    # Resize to target size
+    frame = cv2.resize(frame, (max_size, max_size), interpolation=cv2.INTER_AREA)
 
     # Flip horizontally to correct mirror effect (selfie-style webcams)
     frame = cv2.flip(frame, 1)

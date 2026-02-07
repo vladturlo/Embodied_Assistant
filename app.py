@@ -62,8 +62,8 @@ VIDEO_FRAMES_PER_SECOND = 5.0
 VIDEO_MAX_FRAMES = 50
 
 # Image capture defaults for embodied control (can be overridden in model_config.yaml)
-IMAGE_MAX_WIDTH = 640
-IMAGE_MAX_HEIGHT = 480
+# Square output (center-cropped) for optimal Ministral-3 performance
+IMAGE_SIZE = 240
 IMAGE_JPEG_QUALITY = 70
 
 # Embodied control settings
@@ -90,7 +90,7 @@ def load_model_config() -> dict:
         Configuration dictionary.
     """
     global VIDEO_FRAMES_PER_SECOND, VIDEO_MAX_FRAMES
-    global IMAGE_MAX_WIDTH, IMAGE_MAX_HEIGHT, IMAGE_JPEG_QUALITY
+    global IMAGE_SIZE, IMAGE_JPEG_QUALITY
 
     config_path = Path(__file__).parent / "model_config.yaml"
     if config_path.exists():
@@ -106,10 +106,8 @@ def load_model_config() -> dict:
 
         # Load image settings if present
         image_config = config.get("image", {})
-        if "max_width" in image_config:
-            IMAGE_MAX_WIDTH = int(image_config["max_width"])
-        if "max_height" in image_config:
-            IMAGE_MAX_HEIGHT = int(image_config["max_height"])
+        if "size" in image_config:
+            IMAGE_SIZE = int(image_config["size"])
         if "jpeg_quality" in image_config:
             IMAGE_JPEG_QUALITY = int(image_config["jpeg_quality"])
 
@@ -631,8 +629,7 @@ async def run_embodied_loop(instruction: str) -> int:
     profiler = EmbodiedProfiler(
         model=MODEL_NAME,
         image_settings={
-            "max_width": IMAGE_MAX_WIDTH,
-            "max_height": IMAGE_MAX_HEIGHT,
+            "size": IMAGE_SIZE,
             "jpeg_quality": IMAGE_JPEG_QUALITY,
         },
     )
@@ -667,8 +664,7 @@ async def run_embodied_loop(instruction: str) -> int:
         # Prefetch first frame before loop starts
         next_frame_bytes = capture_frame_from_cap(
             cap,
-            max_width=IMAGE_MAX_WIDTH,
-            max_height=IMAGE_MAX_HEIGHT,
+            max_size=IMAGE_SIZE,
             jpeg_quality=IMAGE_JPEG_QUALITY,
         )
 
@@ -728,7 +724,7 @@ Analyze this image. What direction should I move the mouse?
             loop = asyncio.get_event_loop()
             next_frame_task = loop.run_in_executor(
                 None, capture_frame_from_cap, cap,
-                IMAGE_MAX_WIDTH, IMAGE_MAX_HEIGHT, IMAGE_JPEG_QUALITY,
+                IMAGE_SIZE, IMAGE_JPEG_QUALITY,
             )
             response_text, used_mouse, tool_called, failsafe = await run_embodied_turn(
                 agent, agent_message, profiler, status_msg=status_msg
@@ -864,7 +860,7 @@ Analyze this image. What direction should I move the mouse?
         # Submit initial tasks with stagger
         for i in range(min(num_slots, EMBODIED_MAX_ITERATIONS)):
             frame_bytes = capture_frame_from_cap(
-                cap, IMAGE_MAX_WIDTH, IMAGE_MAX_HEIGHT, IMAGE_JPEG_QUALITY,
+                cap, IMAGE_SIZE, IMAGE_JPEG_QUALITY,
             )
             if frame_bytes is None:
                 break
@@ -978,7 +974,7 @@ Analyze this image. What direction should I move the mouse?
                     agent = agents[agent_idx]
 
                     frame_bytes = capture_frame_from_cap(
-                        cap, IMAGE_MAX_WIDTH, IMAGE_MAX_HEIGHT, IMAGE_JPEG_QUALITY,
+                        cap, IMAGE_SIZE, IMAGE_JPEG_QUALITY,
                     )
                     if frame_bytes is None:
                         should_stop = True
