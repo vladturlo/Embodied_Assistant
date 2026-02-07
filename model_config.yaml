@@ -10,7 +10,7 @@
 provider: litellm
 
 # Model name (must match LiteLLM model_name or llama-server model)
-model: ministral-3
+model: qwen3-vl
 
 # LiteLLM proxy endpoint (load-balanced across 4 GPUs)
 # SSH tunnel: ssh -A -N -L 11400:localhost:11400 <node>
@@ -26,7 +26,7 @@ capabilities:
 
 # Generation options
 options:
-  temperature: 0.15  # Low temperature as recommended by Mistral
+  temperature: 0.15  # Low temperature for consistent responses
   num_ctx: 262144  # 256K full context
 
 # llama.cpp specific options for KV cache persistence
@@ -41,7 +41,7 @@ model_info:
   vision: true
   function_calling: true
   json_output: false
-  family: mistral
+  family: qwen
   structured_output: false
 
 # Video processing settings
@@ -50,7 +50,7 @@ video:
   max_frames: 50          # Maximum frames to prevent overload on long videos
 
 # Image capture settings for embodied control
-# Square center-cropped output for optimal Ministral-3 performance (1:1 aspect ratio)
+# Square center-cropped output (1:1 aspect ratio recommended for vision models)
 # Lower resolution = faster model inference + fewer visual tokens
 image:
   size: 240           # Square output size (center-cropped from webcam)
