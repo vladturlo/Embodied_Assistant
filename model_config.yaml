@@ -53,7 +53,7 @@ video:
 # Square center-cropped output for optimal Ministral-3 performance (1:1 aspect ratio)
 # Lower resolution = faster model inference + fewer visual tokens
 image:
-  size: 64            # Square output size (center-cropped from webcam)
+  size: 240           # Square output size (center-cropped from webcam)
   jpeg_quality: 65    # JPEG compression quality (0-100)
 
 # Pipeline settings for embodied control
