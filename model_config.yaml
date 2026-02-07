@@ -62,3 +62,5 @@ pipeline:
   enabled: false        # Set to true after confirming multi-GPU setup
   slots: 8              # 4 GPUs × 2 parallel each
   move_distance: 15     # Pixels per move (smaller = smoother at ~48ms intervals)
+  smooth_movement: true # Continuous cursor movement with direction averaging
+  speed_px_per_sec: 200 # Cursor speed in pixels per second (only when smooth_movement=true)

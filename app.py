@@ -48,7 +48,7 @@ from tools.webcam import (
     extract_video_frames,
     get_video_capture,
 )
-from tools.mouse import move_mouse, get_mouse_position, get_screen_size
+from tools.mouse import move_mouse, get_mouse_position, get_screen_size, SmoothMouseController
 from tools.profiler import EmbodiedProfiler
 
 # Configuration
@@ -368,6 +368,28 @@ def detect_stop_condition(text: str) -> bool:
     """Check if the model's response indicates stopping."""
     text_lower = text.lower()
     return any(indicator in text_lower for indicator in STOP_INDICATORS)
+
+
+def extract_direction_from_response(response_text: str) -> str | None:
+    """Extract direction from model response text.
+
+    Args:
+        response_text: The model's response text.
+
+    Returns:
+        Direction string ("up", "down", "left", "right", or diagonals),
+        or None if no direction found (cursor should stop).
+    """
+    text_lower = response_text.lower()
+    # Check diagonals first (they contain "up"/"down"/"left"/"right" as substrings)
+    directions = [
+        "up-left", "up-right", "down-left", "down-right",
+        "up", "down", "left", "right",
+    ]
+    for d in directions:
+        if d in text_lower:
+            return d
+    return None
 
 
 async def run_agent_turn(agent: AssistantAgent, agent_message, embodied_mode: bool = False):
@@ -765,9 +787,12 @@ async def run_pipelined_embodied_loop(instruction: str) -> int:
     pipeline_cfg = config.get("pipeline", {})
     num_slots = pipeline_cfg.get("slots", 2)
     move_distance = pipeline_cfg.get("move_distance", PIPELINE_MOVE_DISTANCE)
+    smooth_movement = pipeline_cfg.get("smooth_movement", False)
+    speed_px_per_sec = pipeline_cfg.get("speed_px_per_sec", 200)
 
+    mode_desc = "smooth" if smooth_movement else f"{move_distance}px moves"
     await cl.Message(
-        content=f"**Starting pipelined embodied control** ({num_slots} slots, {move_distance}px moves)"
+        content=f"**Starting pipelined embodied control** ({num_slots} slots, {mode_desc})"
     ).send()
 
     # Create separate model_client + agent per slot (avoids _tool_id race)
@@ -803,6 +828,15 @@ Analyze this image. What direction should I move the mouse?
     task_meta: dict = {}  # task -> {"agent_idx": int, "frame_bytes": bytes}
     completion_times: list[float] = []
     pipeline_start = time.perf_counter()
+
+    # Initialize smooth mouse controller if enabled
+    smooth_controller: SmoothMouseController | None = None
+    if smooth_movement:
+        smooth_controller = SmoothMouseController(
+            num_slots=num_slots,
+            speed_px_per_sec=speed_px_per_sec,
+        )
+        smooth_controller.start()
 
     try:
         await cl.ElementSidebar.set_title("Live Camera Feed (Pipeline)")
@@ -862,6 +896,14 @@ Analyze this image. What direction should I move the mouse?
                 total_completed += 1
                 t_now = time.perf_counter()
                 completion_times.append(t_now)
+
+                # Update smooth controller with direction from response
+                if smooth_controller:
+                    direction = extract_direction_from_response(response_text)
+                    smooth_controller.update_direction(direction)
+                    # Check if smooth controller hit failsafe
+                    if smooth_controller.failsafe_triggered:
+                        failsafe = True
 
                 # Update UI with the frame used for this inference
                 meta = task_meta.pop(task, {})
@@ -942,6 +984,9 @@ Analyze this image. What direction should I move the mouse?
                     total_submitted += 1
 
     finally:
+        # Stop smooth controller if running
+        if smooth_controller:
+            smooth_controller.stop()
         cap.release()
         await cl.ElementSidebar.set_elements([])
 

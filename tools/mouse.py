@@ -7,6 +7,11 @@ observes visual input and controls the mouse accordingly.
 Windows-only implementation (pyautogui works cross-platform but tested on Windows).
 """
 
+import threading
+import time
+from collections import deque
+from typing import Optional
+
 import pyautogui
 
 # Safety settings
@@ -87,6 +92,110 @@ def get_screen_size() -> str:
         return f"Screen size: {w}x{h}"
     except Exception as e:
         return f"Error getting screen size: {e}"
+
+
+class SmoothMouseController:
+    """Continuous cursor movement with direction averaging.
+
+    Instead of discrete jumps, this controller moves the cursor smoothly
+    at a constant speed. Direction updates from the model are averaged
+    over the last N samples to create fluid motion.
+    """
+
+    # Direction string to unit vector mapping
+    DIRECTION_VECTORS = {
+        "up": (0.0, -1.0),
+        "down": (0.0, 1.0),
+        "left": (-1.0, 0.0),
+        "right": (1.0, 0.0),
+        "up-left": (-0.707, -0.707),
+        "up-right": (0.707, -0.707),
+        "down-left": (-0.707, 0.707),
+        "down-right": (0.707, 0.707),
+    }
+
+    def __init__(self, num_slots: int = 8, speed_px_per_sec: float = 200.0):
+        """Initialize the smooth mouse controller.
+
+        Args:
+            num_slots: Number of direction samples to average (default 8).
+            speed_px_per_sec: Cursor movement speed in pixels per second.
+        """
+        self.num_slots = num_slots
+        self.speed = speed_px_per_sec
+        self.direction_history: deque[tuple[float, float]] = deque(maxlen=num_slots)
+        self.current_velocity: tuple[float, float] = (0.0, 0.0)
+        self.running = False
+        self.failsafe_triggered = False
+        self._thread: Optional[threading.Thread] = None
+        self._lock = threading.Lock()
+
+    def start(self):
+        """Start the background movement thread."""
+        self.running = True
+        self.failsafe_triggered = False
+        self._thread = threading.Thread(target=self._movement_loop, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        """Stop the background movement thread."""
+        self.running = False
+        if self._thread:
+            self._thread.join(timeout=0.5)
+
+    def update_direction(self, direction: Optional[str]):
+        """Update the movement direction based on model output.
+
+        Args:
+            direction: Direction string ("up", "down", "left", "right", or diagonals).
+                       Pass None to stop movement immediately.
+        """
+        if direction is None:
+            # No clear direction detected — stop immediately
+            with self._lock:
+                self.direction_history.clear()
+                self.current_velocity = (0.0, 0.0)
+            return
+
+        vector = self.DIRECTION_VECTORS.get(direction.lower().strip())
+        if vector is None:
+            # Unknown direction string — stop
+            with self._lock:
+                self.direction_history.clear()
+                self.current_velocity = (0.0, 0.0)
+            return
+
+        with self._lock:
+            self.direction_history.append(vector)
+            # Average all directions in history
+            avg_dx = sum(d[0] for d in self.direction_history) / len(self.direction_history)
+            avg_dy = sum(d[1] for d in self.direction_history) / len(self.direction_history)
+            # Normalize to unit vector
+            mag = (avg_dx**2 + avg_dy**2) ** 0.5
+            if mag > 0.01:
+                self.current_velocity = (avg_dx / mag, avg_dy / mag)
+            else:
+                self.current_velocity = (0.0, 0.0)
+
+    def _movement_loop(self):
+        """Background thread: move cursor at constant speed in current direction."""
+        interval = 0.016  # ~60 FPS
+        while self.running:
+            with self._lock:
+                vx, vy = self.current_velocity
+
+            if abs(vx) > 0.01 or abs(vy) > 0.01:
+                # Move by speed * interval pixels
+                dx = vx * self.speed * interval
+                dy = vy * self.speed * interval
+                try:
+                    pyautogui.moveRel(dx, dy, _pause=False)
+                except pyautogui.FailSafeException:
+                    self.failsafe_triggered = True
+                    self.running = False
+                    break
+
+            time.sleep(interval)
 
 
 # For testing
