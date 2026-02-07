@@ -78,7 +78,6 @@ STOP_INDICATORS = ["stop", "stopped", "stopping", "fist", "closed fist", "abort"
 
 # System prompt for embodied control mode (minimal to avoid conflicting with user instruction)
 EMBODIED_SYSTEM_PROMPT = """You control a mouse cursor based on visual input. Follow the user's instruction exactly.
-The image shows what you see — move the cursor in the same direction shown in the image.
 Keep responses brief. State what you see, then act."""
 
 
