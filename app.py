@@ -55,7 +55,7 @@ from tools.profiler import EmbodiedProfiler
 SERVER_BASE_URL = "http://localhost:11435"  # Ollama server (via SSH tunnel)
 MODEL_NAME = "ministral-3:8b"  # Model name (set in model_config.yaml)
 CONTEXT_SIZE = 262144  # 256K context
-EMBODIED_CONTEXT_SIZE = 16384  # 16K - sufficient for ~10 buffered messages
+EMBODIED_CONTEXT_SIZE = 65536  # 64K - more room for Qwen3-VL image encoding
 
 # Video processing defaults (can be overridden in model_config.yaml)
 VIDEO_FRAMES_PER_SECOND = 5.0
